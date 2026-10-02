@@ -34,7 +34,7 @@
 
 **Goals**
 
-- Reproduce the clip: an 8-legged spider with long, zigzag, 3-segment legs that walks over a page, shoots a thread from its head to one link at a time, and leaves a trail of restyled links behind it.
+- Reproduce the clip: a spider with six long, zigzag, 3-segment legs that walks over a page, shoots a thread from its head to one link at a time, and leaves a trail of restyled links behind it.
 - Work on **any** site with one click, not only on a demo page.
 - **Fully reversible.** One key (Esc) or a second click puts the page back exactly as it was.
 - One file, no dependencies, no build step. The same `crawler.js` runs from the extension, a bookmarklet, the demo page, or pasted into the console.
@@ -55,7 +55,7 @@ The brief was reconstructed from four frames. Reading those frames closely settl
 | Seen in the frames | Conclusion | Where it lands in the design |
 |---|---|---|
 | Blue rounded rectangle, tilted, with a bright dot at one end | Body is a rotated rect; the dot marks the head | [Renderer](#11-module-renderer) |
-| 8 thin polylines from the body, about 22 dots around it (close to 8 × 3) | Jointed legs with 3 segments each; dots are knee, ankle, foot | [Legs](#9-module-legs) |
+| Thin polylines from the body with about 22 dots around it; the lines cross too much to count legs reliably | Jointed legs with 3 segments each; dots are knee, ankle, foot. Built with 6 legs (18 dots), configurable | [Legs](#9-module-legs) |
 | The polylines fold back on themselves and cross each other; segments are long compared with the body | Long bones folded into a **zigzag** (knee and ankle bend opposite ways), not a smooth arch | [Legs §9.6](#96-inverse-kinematics) |
 | In every blue-theme frame exactly **one** link has a cyan box around it, and one long straight line runs to it from the head dot (0:04: the DOI in ref. 146, ~250 px away). Feet have no boxes | A **thread** from the head holds one link at a time; that is what selects links, not the feet | [Thread §10.5](#105-the-thread) |
 | One second later (0:05) that same DOI has a pink highlight and the box and line are on the DOI above it | After a short hold the held link is restyled and the thread moves on | [Thread §10.5](#105-the-thread) |
@@ -97,7 +97,7 @@ Everything lives in one IIFE in `extension/crawler.js`. Internally it is six mod
 │  nearest() closest free target       │ goal               │ x, y, angle, v
 └───────────────┬──────────────────────┘                    ▼
                 │ nearest()                   ┌───────────────────────────┐
-                └────────────────────────────▶│ LEGS  (×8)                │
+                └────────────────────────────▶│ LEGS  (×6)                │
                                               │  gait gate, step trigger  │
                                               │  step tween, 3-bone IK    │
                                               └──────┬─────────────┬──────┘
@@ -137,14 +137,14 @@ Both must add **zero** scrollable overflow, or the page gains a scrollbar the mo
 
 ```
 spidey/
-├── archi.md                 this file
+├── architecture.md          this file
 ├── spider-web-crawler.md    the original brief
 ├── README.md                how to run it
 ├── extension/               loadable as an unpacked Chrome extension
 │   ├── manifest.json        Manifest V3
 │   ├── background.js        icon click → inject crawler.js into the tab
 │   ├── crawler.js           THE WHOLE SPIDER (single source of truth)
-│   └── icons/               16 / 48 / 128 px
+│   └── icons/               16 / 32 / 48 / 128 px
 ├── demo/
 │   └── index.html           dark, Wikipedia-style references page for local testing
 └── tools/
@@ -167,8 +167,8 @@ spidey/
 ```
 
 - **Toggle by re-injection.** The first line of the script checks `window.__webCrawler`. If it exists, the script calls its `destroy()` and returns. So "click the icon again" turns the spider off, and `background.js` needs no state.
-- **init**: detect dark/light page, create canvas and float layer, place the body just above the top of the viewport facing down, put all eight feet on their rest spots, register listeners, schedule the first scan, start the loop.
-- **destroy**: see [§13](#13-reset-and-undo).
+- **init**: detect dark/light page, create canvas and float layer, place the body just above the top of the viewport facing down, put all the feet on their rest spots, register listeners, schedule the first scan, start the loop.
+- **destroy**: stop at once, send the restyled links home over 320 ms, then restore the page. See [§13](#13-reset-and-undo).
 
 The spider never starts on its own. It only runs after a user action.
 
@@ -237,6 +237,8 @@ On a link-rich page such as a Wikipedia references list, `'auto'` means the DOM 
   link,    // true for links
   x, y,    // top-left of its first line box, document space
   w, h,    // size of that box (w = 0 means "not visible right now")
+  multi,   // true if the element wraps over more than one line
+  shown,   // cached answer of showing(): can the reader see it? undefined = not tested yet
   holder,  // who has reserved it: a leg standing on or stepping to it, or the thread; else null
   gone,    // true once it has been restyled; never targeted again
   q,       // id of the last nearest() query that visited it (dedupe stamp)
@@ -301,6 +303,19 @@ Scans the cells covering the circle and returns the best free target plus the ex
 - A target is rejected if it is `gone`, reserved by another leg or by the thread, equal to `skip` (the word the foot just left), further than `radius` from the query, or further than `reach` from `(hx, hy)` (the hip, so a leg is never asked to reach a spot it cannot touch).
 - **Links win.** A word's distance is scored as `d · 1.6 + 6`. A word is chosen only when no link is comparably close.
 
+### 7.7 `showing(target)` — can the reader actually see it?
+
+A box is not proof of visibility. On Wikipedia the Tools and main-menu dropdowns are in the DOM all the time, laid out with real boxes on top of the article, and hidden with `visibility: hidden` and `opacity: 0`. Their links ("Permanent link", "Special pages", "Get shortened URL") passed every geometric test, and when the spider restyled one, its copy appeared in the middle of the article out of nowhere. That was found on the first real test with the extension.
+
+`showing()` is the gate. A target may be restyled only if both hold:
+
+1. `el.checkVisibility({ opacityProperty: true, visibilityProperty: true })` is true, which covers `display: none`, `visibility: hidden` and `opacity: 0` on the element or any ancestor.
+2. **Hit test**: `document.elementFromPoint()` at the centre of its box returns the element or something inside it. This also rejects links that are clipped by an `overflow: hidden` ancestor or covered by a sticky header. The spider's own canvas and float layer are `pointer-events: none`, so they never interfere with the test.
+
+It is called where a restyle is decided: in `pickPrey()` for the thread and at the kick in `startStep()`. Feet may still *stand* on an invisible link, which has no visible effect. The answer is cached on the target and cleared by every `measure()`, so it is re-tested after each scroll and every 2.5 s.
+
+Tested with two fake closed menus of eight links each (one `visibility: hidden`, one `opacity: 0`) laid over the demo page's references: 0 of 76 restyles touched them.
+
 ---
 
 ## 8. Module: Body
@@ -341,21 +356,21 @@ Scurry is what keeps the spider in frame while the page scrolls, as in the clip.
 
 ## 9. Module: Legs
 
-Eight legs, four per side, built once.
+**Six legs, three per side**, built once. The count is `legPairs` (3). A real spider has four pairs, and `legPairs: 4` gives that; three is the default because eight long zigzag legs are 24 crossing segments around a 52 px body, which on a real page read as a scribble with no countable legs. Everything below (rest spots, hips, bend direction, gait groups) is derived from the pair count, so any value from 2 up works.
 
 ### 9.1 Geometry
 
 ```
                  heading →
-        L4    L3    L2    L1
-          \    \    /    /            rest spots: fan at restAngles
-           ●────●──●────●             [0.55, 1.15, 1.9, 2.6] rad from the heading,
-         ╔═══════════════════╗        radius restRadius · (1.1 for pairs 1 and 4,
-         ║        body     ◉ ║                             0.95 for pairs 2 and 3)
-         ╚═══════════════════╝
-           ●────●──●────●             hips: along both long edges of the body
-          /    /    \    \
-        R4    R3    R2    R1
+           L3      L2      L1
+             \     |     /            rest spots: a fan from restSpread[0] (front pair)
+              ●────●────●             to restSpread[1] (back pair), 0.55 → 2.6 rad from
+         ╔═══════════════════╗        the heading, other pairs evenly in between;
+         ║        body     ◉ ║        radius restRadius · (1.1 for the front and back
+         ╚═══════════════════╝                             pairs, 0.95 for the others)
+              ●────●────●
+             /     |     \            hips: evenly along both long edges of the body
+           R3      R2      R1
 ```
 
 | Constant | Value | Meaning |
@@ -373,7 +388,7 @@ The bones are long and the rest spots are close: a resting foot is at roughly **
 ```js
 {
   side,               // −1 left, +1 right
-  group,              // 0 or 1, the tetrapod group
+  group,              // 0 or 1, the gait group
   bend,               // ±1, which side of the hip→foot line the knee is on (the ankle is opposite)
   hipX, hipY,         // body-local
   restX, restY,       // body-local
@@ -412,12 +427,12 @@ The bones are long and the rest spots are close: a resting foot is at roughly **
 
 `stretched` is the safety valve. It **ignores the gait gate**: a leg that physically cannot reach its foot steps now. This is what keeps the legs attached during a scurry.
 
-**Gait gate (alternating tetrapod).**
+**Gait gate (alternating tripod).**
 
-- Group 0: L1, R2, L3, R4
-- Group 1: R1, L2, R3, L4
+- Group 0: L1, R2, L3
+- Group 1: R1, L2, R3
 
-A leg may begin a normal step only if no leg of the *other* group is mid-step. Four feet are always on the ground, and the two groups alternate. `group = (pairIndex + (side > 0 ? 1 : 0)) % 2`.
+A leg may begin a normal step only if no leg of the *other* group is mid-step. Three feet, one triangle, are always on the ground, and the two groups alternate. `group = (pairIndex + (side > 0 ? 1 : 0)) % 2`, which is the same rule for any pair count: with four pairs it gives the alternating tetrapod (L1 R2 L3 R4 / R1 L2 R3 L4) that real spiders use.
 
 **Step duration** shortens as the body speeds up so legs can keep pace:
 
@@ -439,7 +454,7 @@ land    = hit ? hit.point : aim
 
 The lead makes the foot land ahead of its rest spot, so the body walks *over* it before it falls behind. If a target was hit it is reserved (`target.holder = leg`) for the whole flight, so two feet never choose the same link, and the thread never takes a link a foot is on.
 
-Feet do **not** draw a box around what they stand on, and most of the time they leave it alone. On lifting, a foot kicks the link it was standing on with probability `linkKickChance` (0.2; `wordKickChance` 0.3 for words). See [§10.2](#102-pick-up).
+Feet do **not** draw a box around what they stand on, and most of the time they leave it alone. On lifting, a foot kicks the link it was standing on with probability `linkKickChance` (0.04; `wordKickChance` 0.3 for words). See [§10.2](#102-pick-up).
 
 ### 9.5 Step tween
 
@@ -513,23 +528,25 @@ Extra benefits: undo is trivial (remove the layer, restore `visibility`), the co
 | Caller | When | `dx, dy` | Result |
 |---|---|---|---|
 | **Thread** ([§10.5](#105-the-thread)) | its hold on a link ends | `0, 0` | restyled **in place** |
-| **Foot kick** (`startStep()`) | a foot lifts off a link, with probability `linkKickChance` 0.2 (`wordKickChance` 0.3) | step vector × random 0.3–0.9 | restyled and **dragged** part of the way along the step |
+| **Foot kick** (`startStep()`) | a foot lifts off a link, with probability `linkKickChance` 0.04 (`wordKickChance` 0.3) | step vector × random 0.3–0.9 | restyled and **dragged** part of the way along the step |
 
-The thread is the main source (about one link per second). Kicks are the minority that end up out of place.
+The thread is the main source (about one link per second). Kicks are the minority that end up out of place. The kick chance looks tiny, but feet take about ten steps a second between them, so even 0.04 yields roughly one kicked link for every five the thread restyles.
 
 ```
 text  = el.innerText, whitespace collapsed
+width = the link's box width                         (single-line link)
+        or its text measured on one line             (link that wraps over several lines)
 copy  = <span> with  all: initial; position: absolute; left: 0; top: 0;
                      white-space: nowrap; transform-origin: 50% 50%; will-change: transform
         + font-family/size/weight/style and colour copied from the original's computed style
-        + line-height = original box height (so the glyphs start exactly where they were)
+        + width = width, line-height = original box height
 copy.transform = translate(target.x, target.y)
 original       → visibility: hidden !important       (previous inline value saved)
 target.gone    = true
 returns          { el, x, y, dx, dy, rot, scale, age }      the copy's animation record
 ```
 
-Because the copy starts as a pixel-accurate stand-in for the original, anything the restyle does not change stays as it was.
+The copy is given the link's **exact box**: same width, same height, glyphs starting at the same pixel. Two things follow. Anything the restyle does not change stays precisely as it was. And anything drawn on the box (a highlight bar, an outline) covers exactly the area the link occupied, no more.
 
 ### 10.3 Restyle
 
@@ -539,12 +556,25 @@ Applied once, at pick-up. Each property is rolled **independently**, and the def
 |---|---|
 | Font | 45 % monospace (Courier New), and 40 % of those get 0.1 em letter-spacing · 30 % serif (Georgia) · 25 % unchanged |
 | Weight | 15 % bold |
-| Scale | 22 % tiny (0.3–0.45×) · 22 % big (1.5–2×, or 1.05–1.15× for text over 24 chars) · 56 % unchanged |
-| Look | 25 % solid **highlight bar** (theme fill, dark ink of the same hue, small padding) · 35 % text **recoloured** · 10 % recoloured inside a 1 px **outline box** · 30 % the link's own colour |
-| Rotation | thread: 12 % · kick: 50 %. When it happens: half slight (±6–18°), half steep (±40–80°) |
+| Scale | 20 % tiny (0.3–0.45×) · 18 % big (1.4–1.9×), only for text of 24 characters or fewer, and capped so the copy stops at the right edge of the page · the rest unchanged |
+| Look | 25 % solid **highlight bar** (theme fill, near-black ink of the same hue) · 35 % text **recoloured** · 10 % recoloured inside a 1 px **outline box** · 30 % the link's own colour |
+| Rotation | thread: 10 % · kick: 85 %. When it happens: half slight (±6–18°), half steep (±40–80°) |
 | Scale origin | unrotated copies scale from their **left edge**, so a tiny copy sits at the start of the gap it left; rotated copies turn about their centre |
 
 A link that drew "unchanged" for both font and scale is forced into one of the coloured looks, so no restyle is invisible. Italics are never added or removed: an italic book title stays italic.
+
+**Fit to the box.** A new typeface must not make the text wider than the link was. Courier New is about 20 % wider than a typical sans-serif at the same size, bold is wider again, and letter-spacing adds 0.1 em per character. Left alone, the restyled text runs past the end of its gap and sits on top of whatever follows it, and a highlight bar grows with it. That was a real bug in the first thread build: bars overlapped neighbouring words and ran off the edge of the page. Now:
+
+1. The new width is estimated with `ctx.measureText` on the spider's canvas (no page layout involved).
+2. If letter-spacing would force the type below 80 % of its size, the letter-spacing is dropped.
+3. If the text is still wider than the box, `font-size` is reduced by the ratio.
+4. After the copy is in the DOM, one exact check (`scrollWidth` against the box width) corrects the last pixel or two the estimate can miss (kerning, synthesised bold).
+
+Measured over five runs and 71 restyled links: none had text wider than its box, and none reached past the right edge of the page.
+
+**Bars.** A highlight bar is the copy's own box plus a 2 px rim drawn with `box-shadow`, which takes up no layout room. It has no padding, because padding would shift the text and widen the bar over the next word.
+
+**Kicked copies nearly always rotate** (85 %). A kicked copy is out of place by design, and upright text that is out of place reads as a broken layout, not as something a spider did.
 
 Colours come from the active spider theme ([§11.2](#112-themes)), so the text always matches the spider:
 
@@ -604,12 +634,12 @@ One canvas, sized `innerWidth × innerHeight` CSS pixels and backed by `× devic
 
 ### 11.1 Draw order (back to front)
 
-1. **Box**: a 2 px rectangle in the head colour around the link the thread is holding, 3 px outside its rect.
+1. **Box**: a 2 px rectangle in the head colour around the link the thread is holding. It appears when the thread *lands* (not while it is still flying), starting 9 px outside the link and closing in to 3 px over 0.12 s. When the link changes, the box is filled once at 45 % and fades with the retracting thread: a flash that ties the change to the spider.
 2. **Thread**: a 2 px line from the head toward the link, drawn to `ext` of its length, in the leg colour.
 3. **Legs**: polyline hip → knee → ankle → foot, 2 px, round caps and joins. Thread and legs are one path and one stroke call.
 4. **Joints**: 3 px dots at the knee, ankle and foot. The foot dot grows by up to 1.5 px with `lift`, which reads as the foot coming off the page.
-5. **Body**: rounded rect `bodyLength × bodyWidth` (52 × 18), rotated to the heading, translucent blue fill, 2.5 px stroke.
-6. **Head**: 3.6 px dot near the front end. The thread starts here.
+5. **Body**: rounded rect `bodyLength × bodyWidth` (52 × 18), rotated to the heading plus a small **sway**, translucent blue fill, 2.5 px stroke. The sway leans the body up to `sway` (0.02 rad) per airborne leg toward whichever gait group is stepping, smoothed, so the body rocks in time with the walk instead of gliding like a cursor.
+6. **Head**: 3.6 px dot near the front end, swelling by up to 1 px while the thread is out. The thread starts here.
 
 ### 11.2 Themes
 
@@ -658,17 +688,25 @@ Order matters: the body moves first, so the hips, rest spots and head position u
 
 ## 13. Reset and undo
 
-Every change to the page is recorded as it is made, so `destroy()` can reverse all of it:
+Calling the spider back happens in two stages.
+
+**`destroy()` — stop, at once.** Cancels the frame loop, removes the listeners, deletes `window.__webCrawler` and tells the extension the spider is gone. From this moment a new spider can be started.
+
+**Exit animation.** Before the page is repaired, it is *shown* being repaired: every floating copy gets a CSS `transition` on `transform` and is sent back to its origin (`translate(x, y) rotate(0) scale(1)`), and the canvas fades out. This takes `exitTime` (320 ms) and uses the browser's own transitions, so it needs no frame loop. Without it, Esc makes dozens of scattered links snap back in a single frame, which reads as a glitch.
+
+The animation is skipped, and the page restored immediately, when there is nothing to send home, when the tab is hidden (a hidden tab runs no transitions), under `prefers-reduced-motion`, or when `destroy(true)` is called.
+
+**`restore()` — put the page back.** Every change to the page was recorded as it was made, so all of it can be reversed:
 
 | Change made | Recorded in | Undone by |
 |---|---|---|
 | canvas and float layer added | module variables | `.remove()` (all floating copies go with the layer) |
 | original element hidden | `hidden[]` as `[el, previous value, previous priority, had a style attribute]` | restore or remove the inline `visibility`; remove the `style` attribute if the element had none (otherwise an empty `style=""` is left behind) |
 | words wrapped in spans | `wrapped[]` | replace each span with its text, then `normalize()` each affected parent to merge the text nodes back together |
-| event listeners, rAF | — | removed / cancelled |
-| `window.__webCrawler` | — | deleted |
+| event listeners, rAF | — | removed / cancelled (in `destroy()`) |
+| `window.__webCrawler` | — | deleted (in `destroy()`) |
 
-After `destroy()` the DOM is identical to what it was before injection: on the demo page `document.body.innerHTML` compares equal, character for character, before and after a run that restyled ~40 links (and, in the earlier words-on configuration, wrapped ~670 words).
+After `restore()` the DOM is identical to what it was before injection: on the demo page `document.body.innerHTML` compares equal, character for character, before and after a run that restyled ~40 links (and, in the earlier words-on configuration, wrapped ~670 words).
 
 `window.__webCrawler` is `{ destroy, config, body, legs, thread }`. `body`, `legs` and `thread` are the live simulation objects, exposed for debugging and for tests.
 
@@ -698,12 +736,26 @@ Budget: 16.6 ms per frame. Measured on the demo page: about 0.2 ms per frame for
 ```
 manifest.json   MV3 · permissions: activeTab, scripting · no host permissions
 background.js   chrome.action.onClicked → chrome.scripting.executeScript({ files: ['crawler.js'] })
+                chrome.runtime.onMessage → badge and tooltip for that tab
+icons/          icon16, icon32, icon48, icon128
 ```
 
 - `activeTab` grants access only to the tab the user clicked on, only at that moment. The extension can read nothing in the background and needs no scary install-time warning.
 - Extension-injected scripts are not subject to the page's Content-Security-Policy, so it works on Wikipedia, GitHub, and news sites where a bookmarklet is blocked.
 - The script runs in the extension's isolated world. `window.__webCrawler` lives there too and persists between clicks, so the toggle works.
 - Keyboard shortcut: `Alt+Shift+S` (`_execute_action`).
+
+**The button shows the spider's state.** The background script cannot know by itself whether the spider is out: the user may have pressed Esc in the page. So `crawler.js` reports it, with `chrome.runtime.sendMessage({ webCrawler: true | false })` on start and in `destroy()`. The background script answers by setting, for that tab only:
+
+| State | Badge | Tooltip |
+|---|---|---|
+| out | `ON` (pink) | "Call the spider back (or press Esc)" |
+| not out | none | "Release the spider" |
+| page cannot be scripted (`chrome://`, the Web Store, the PDF viewer) | `!` for 2.5 s | "The spider cannot crawl this page" |
+
+Per-tab badge and title reset by themselves when the tab navigates, which is also when the spider is gone, so there is no stale state to clean up. On the demo page and from a bookmarklet there is no extension; `notify()` checks for `chrome.runtime.id` and does nothing.
+
+**Icons.** `tools/make-icons.ps1` draws them with GDI+ on a 128-unit grid at 8× and scales down, for clean edges. There are two drawings: 128 px gets the full scene (zigzag legs with every joint, the thread, the cyan link box); 16, 32 and 48 px get a simplified upright spider with thick strokes, one bend per leg and dots on the feet only, because three joints per leg are noise at toolbar size. `-Preview sheet.png` writes all four sizes enlarged on a light and a dark toolbar colour for checking.
 
 ### 15.2 Bookmarklet
 
@@ -722,6 +774,7 @@ All constants are in the `CFG` object at the top of `crawler.js`.
 | You want | Change |
 |---|---|
 | A bigger or smaller spider | `upperLen`, `midLen`, `lowerLen`, `restRadius`, `bodyLength`, `bodyWidth` together |
+| Eight legs, like a real spider | `legPairs: 4` |
 | Legs that look more tangled | raise the three bone lengths, or lower `restRadius` (more slack to fold) |
 | Straighter, tidier legs | lower the bone lengths toward `restRadius / 2` each |
 | Links changing faster or slower | `threadHold` and `threadPause` |
@@ -758,6 +811,11 @@ With the current build (thread, zigzag legs):
 - [x] One link at a time is boxed with a line from the head; about a second later it is restyled and another is boxed.
 - [x] Screenshot compared side by side with the 0:04 reference frame.
 - [x] Restyled links leave a blank gap; surrounding text does not move; no scrollbar appears.
+- [x] Restyled text never leaves its link's box (0 of 71 over five runs); highlight bars match the box.
+- [x] Six legs in two tripod groups (`010101`); bones keep their lengths.
+- [x] Links hidden by `visibility` or `opacity` are never restyled (0 of 76 over five runs).
+- [x] Esc with the exit animation: the handle is gone at once, every copy is heading home, and after it the page is unchanged.
+- [x] Demo button switches between "Release the spider" and "Call it back".
 - [x] On the link-rich demo page no words are wrapped (`[data-wc="w"]` count is 0).
 - [x] Bones keep their lengths; `|foot − hip|` stays inside `REACH`.
 - [x] Second injection turns it off; `[data-wc]` count is 0 and `body.innerHTML` is unchanged.
@@ -775,6 +833,8 @@ Still to check by hand:
 - [ ] Real-time motion in a foreground tab (the test tab was in the background, so nothing was watched live).
 - [ ] A page with few links, where `words: 'auto'` switches word targets on.
 - [ ] Loaded as an unpacked extension: icon click on, icon click off, `Alt+Shift+S`.
+- [ ] The toolbar badge: `ON` while the spider is out, cleared by Esc, `!` on a `chrome://` page. (`background.js` has only been syntax-checked.)
+- [ ] The exit animation watched in a foreground tab.
 - [ ] Wikipedia *Spider* article, dark mode, references section: smooth while scrolling.
 - [ ] A light-themed page: displaced text is readable (light palette in use).
 - [ ] Resize the window and change zoom: canvas stays sharp and aligned.
@@ -782,6 +842,15 @@ Still to check by hand:
 ---
 
 ## 19. Roadmap
+
+### Next, in order
+
+1. **Keep testing on real pages.** The first run of the extension on Wikipedia's main page found two problems, both fixed: links from closed dropdown menus being restyled ([§7.7](#77-showingtarget--can-the-reader-actually-see-it)) and too many legs to read ([§9](#9-module-legs)). Next is the *Spider* article in dark mode, then the rest of the "still to check by hand" list in [§18](#18-test-checklist). Expect more tuning (walk speed, thread timing) and more site-specific surprises, for example the hidden "Jump up" label inside the `^` back-links, which `innerText` will include in the copy.
+2. **Light pages and link-poor pages.** Both code paths exist (`deep` colours, `words: 'auto'`) and neither has been looked at since the thread was added.
+3. **Record the clip.** 15–20 s on the *Spider* article, dark mode, cursor visible. Set `themeEvery: 6000` for the recording so the colours change as in the original.
+4. **Ship it.** Host `crawler.js` for the bookmarklet, publish the extension (the store listing needs screenshots and a one-line privacy statement: no data collected, no host permissions), and put the clip at the top of the README.
+
+### Later
 
 Carried over from the brief, in rough order of effort:
 

@@ -3,19 +3,19 @@
  *
  * One self-contained file, no dependencies, no build step. Injecting it a
  * second time (or pressing Esc) removes the spider and restores the page.
- * The design is documented in ../archi.md; section numbers below refer to it.
+ * The design is documented in ../architecture.md; section numbers below refer to it.
  */
 (() => {
   'use strict';
 
-  // Second injection = toggle off (archi §5).
+  // Second injection = toggle off (architecture §5).
   if (window.__webCrawler) {
     window.__webCrawler.destroy();
     return;
   }
   if (!document.body) return;
 
-  // ───────────────────────────── Config (archi §16) ─────────────────────────────
+  // ───────────────────────────── Config (architecture §16) ─────────────────────────────
 
   const CFG = {
     // Body
@@ -33,7 +33,8 @@
     midLen: 86, // knee → ankle
     lowerLen: 78, // ankle → foot
     restRadius: 118,
-    restAngles: [0.55, 1.15, 1.9, 2.6], // rad from the heading, front pair to back pair
+    legPairs: 3, // 3 pairs = 6 legs; 4 pairs = the anatomically correct 8
+    restSpread: [0.55, 2.6], // rad from the heading: front pair, back pair; others in between
     stepDist: 50,
     stepTime: 0.15, // s
     minStepTime: 0.06,
@@ -57,7 +58,7 @@
     settleTime: 0.22, // s a restyled link takes to ease into its new size and angle
 
     // Feet: a lifting foot can kick the link it stood on out of place
-    linkKickChance: 0.2,
+    linkKickChance: 0.04,
     wordKickChance: 0.3,
 
     // Restyle
@@ -66,6 +67,8 @@
 
     // Renderer
     themeEvery: Infinity, // ms per theme; 6000 alternates blue/pink and orange/green like the clip
+    sway: 0.02, // rad the body rocks toward whichever legs are in the air
+    exitTime: 320, // ms for restyled links to fly home when the spider is called back
   };
 
   // A theme colours the spider and the text it touches. In `fx`: `fill` is a highlight bar and
@@ -78,9 +81,9 @@
       body: [78, 98, 242],
       head: [70, 226, 255],
       fx: [
-        { fill: '#43dcff', ink: '#0a3f4d', deep: '#0b7fa6' },
-        { fill: '#ff3f7f', ink: '#7c0e3c', deep: '#d81b60' },
-        { fill: '#ff3b4e', ink: '#5e0a14', deep: '#c62828' },
+        { fill: '#43dcff', ink: '#062c36', deep: '#0b7fa6' },
+        { fill: '#ff3f7f', ink: '#4a0622', deep: '#d81b60' },
+        { fill: '#ff3b4e', ink: '#45060d', deep: '#c62828' },
       ],
     },
     {
@@ -89,9 +92,9 @@
       body: [78, 98, 242],
       head: [255, 79, 216],
       fx: [
-        { fill: '#ff7a45', ink: '#5a1c05', deep: '#d9480f' },
-        { fill: '#3fd673', ink: '#0b4722', deep: '#1a8f3c' },
-        { fill: '#ff3b4e', ink: '#5e0a14', deep: '#c62828' },
+        { fill: '#ff7a45', ink: '#3d1303', deep: '#d9480f' },
+        { fill: '#3fd673', ink: '#063016', deep: '#1a8f3c' },
+        { fill: '#ff3b4e', ink: '#45060d', deep: '#c62828' },
       ],
     },
   ];
@@ -116,6 +119,7 @@
 
   let vw = innerWidth;
   let vh = innerHeight;
+  let pageW = vw; // document width
   let sx = scrollX;
   let sy = scrollY;
   let dpr = 1;
@@ -130,9 +134,10 @@
   const wander = { x: 0, y: 0, until: 0, arrived: false };
   const goal = { x: 0, y: 0, stop: 0, max: 0 };
 
-  // Undo log (archi §13).
+  // Undo log (architecture §13).
   const wrapped = []; // word spans we created
   const hidden = []; // [element, previous inline visibility, previous priority]
+  const copies = []; // every floating copy made, so they can be sent home on exit
 
   const canvas = document.createElement('canvas');
   canvas.setAttribute('data-wc', 'canvas');
@@ -156,7 +161,7 @@
     return false;
   }
 
-  // ───────────────────────────── Text layer (archi §7) ─────────────────────────────
+  // ───────────────────────────── Text layer (architecture §7) ─────────────────────────────
 
   let targets = [];
   const grid = new Map();
@@ -171,7 +176,7 @@
   }
 
   function addTarget(el, link) {
-    targets.push({ el, link, x: 0, y: 0, w: 0, h: 0, holder: null, gone: false, q: 0 });
+    targets.push({ el, link, x: 0, y: 0, w: 0, h: 0, multi: false, shown: undefined, holder: null, gone: false, q: 0 });
   }
 
   function scan() {
@@ -257,7 +262,8 @@
   function measure() {
     targets = targets.filter((t) => !t.gone && t.el.isConnected);
     for (const t of targets) {
-      const r = t.el.getClientRects()[0];
+      const rects = t.el.getClientRects();
+      const r = rects[0];
       if (!r || r.width < 2 || r.height < 2) {
         t.w = 0;
         continue;
@@ -266,12 +272,15 @@
       t.y = r.top + sy;
       t.w = r.width;
       t.h = r.height;
+      t.multi = rects.length > 1; // wraps over more than one line
+      t.shown = undefined; // re-tested by showing() when next needed
     }
 
     // The layer clips the floating copies to the document so they cannot add scrollbars.
     // scrollWidth/Height are rounded up; 1px short keeps the layer itself from overflowing
     // at fractional zoom levels.
     const wide = document.body.scrollWidth;
+    pageW = Math.max(wide, vw);
     layer.style.width = wide > vw + 1 ? wide - 1 + 'px' : '100%';
     layer.style.height = Math.max(document.body.scrollHeight, vh) - 1 + 'px';
 
@@ -292,6 +301,22 @@
         }
       }
     }
+  }
+
+  // Whether the reader can actually see `t`. A box alone is not enough: links inside closed
+  // dropdown menus have boxes but are hidden by visibility or opacity, and restyling one
+  // would make its copy appear out of nowhere. The result is cached until the next measure().
+  function showing(t) {
+    if (t.shown !== undefined) return t.shown;
+    const el = t.el;
+    let ok = !el.checkVisibility || el.checkVisibility({ opacityProperty: true, visibilityProperty: true });
+    if (ok) {
+      // Hit test: the link (or something inside it) must be the top element at its centre,
+      // which also rules out links that are clipped or covered by a sticky header.
+      const top = document.elementFromPoint(t.x + t.w / 2 - sx, t.y + t.h / 2 - sy);
+      ok = !!top && el.contains(top);
+    }
+    return (t.shown = ok);
   }
 
   // Closest free target to (x, y) within `radius`, and no further than `reach` from (hx, hy).
@@ -330,7 +355,7 @@
     return hit.target ? hit : null;
   }
 
-  // ───────────────────────────── Body (archi §8) ─────────────────────────────
+  // ───────────────────────────── Body (architecture §8) ─────────────────────────────
 
   const body = {
     x: sx + vw / 2,
@@ -341,6 +366,7 @@
     speed: 0,
     cos: 0,
     sin: 1,
+    sway: 0,
   };
 
   function pickWander(now) {
@@ -398,18 +424,20 @@
     body.sin = Math.sin(body.angle);
   }
 
-  // ───────────────────────────── Legs (archi §9) ─────────────────────────────
+  // ───────────────────────────── Legs (architecture §9) ─────────────────────────────
 
   const legs = [];
   for (const side of [-1, 1]) {
-    for (let i = 0; i < 4; i++) {
-      const a = CFG.restAngles[i] * side;
-      const r = CFG.restRadius * (i === 0 || i === 3 ? 1.1 : 0.95);
+    const pairs = CFG.legPairs;
+    for (let i = 0; i < pairs; i++) {
+      const along = pairs > 1 ? i / (pairs - 1) : 0.5; // 0 = front pair, 1 = back pair
+      const a = (CFG.restSpread[0] + (CFG.restSpread[1] - CFG.restSpread[0]) * along) * side;
+      const r = CFG.restRadius * (i === 0 || i === pairs - 1 ? 1.1 : 0.95);
       const leg = {
         side,
-        group: (i + (side > 0 ? 1 : 0)) % 2, // alternating tetrapod: L1 R2 L3 R4 | R1 L2 R3 L4
-        bend: i < 2 ? -side : side, // front knees point forward, back knees backward
-        hipX: CFG.bodyLength * (0.3 - i * 0.18),
+        group: (i + (side > 0 ? 1 : 0)) % 2, // alternating gait: L1 R2 L3 | R1 L2 R3
+        bend: along <= 0.5 ? -side : side, // front knees point forward, back knees backward
+        hipX: CFG.bodyLength * (0.3 - 0.54 * along),
         hipY: side * CFG.bodyWidth * 0.5,
         restX: Math.cos(a) * r,
         restY: Math.sin(a) * r,
@@ -481,7 +509,7 @@
     leg.stepping = true;
 
     // Kick: the link the foot was standing on is dragged part of the way along the step.
-    if (held && !held.gone && held.w && held.el.isConnected) {
+    if (held && !held.gone && held.w && held.el.isConnected && showing(held)) {
       if (Math.random() < (held.link ? CFG.linkKickChance : CFG.wordKickChance)) {
         leg.carry = grab(held, (tx - leg.x) * rand(0.3, 0.9), (ty - leg.y) * rand(0.3, 0.9));
       }
@@ -568,6 +596,11 @@
       solveLeg(leg);
     }
 
+    // Sway: the body rocks a little toward whichever gait group is in the air.
+    let lean = 0;
+    for (const leg of legs) if (leg.stepping) lean += leg.group ? -1 : 1;
+    body.sway += (lean * CFG.sway - body.sway) * (1 - Math.exp(-12 * dt));
+
     // Idle fidget: a standing spider keeps pawing at the text.
     if (!calm && body.speed < 12 && now > fidgetAt) {
       fidgetAt = now + rand(350, 1100);
@@ -582,7 +615,7 @@
     }
   }
 
-  // ───────────────────────────── Grab FX (archi §10) ─────────────────────────────
+  // ───────────────────────────── Grab FX (architecture §10) ─────────────────────────────
 
   // Hides `t` and puts a restyled floating copy where it was. (dx, dy) is how far the copy
   // ends up from its origin: zero for the thread, a share of the step for a kicking foot.
@@ -593,6 +626,13 @@
     if (!text) return null;
 
     const cs = getComputedStyle(el);
+    const size = parseFloat(cs.fontSize);
+    // The box the copy has to stay inside: the link's own box, or for a link that wraps over
+    // several lines, the length of its text set on one line.
+    const width = t.multi
+      ? textWidth(text, `${cs.fontStyle} ${cs.fontWeight} ${size}px ${cs.fontFamily}`)
+      : t.w;
+
     const copy = document.createElement('span');
     copy.textContent = text;
     const s = copy.style;
@@ -604,12 +644,19 @@
     s.fontWeight = cs.fontWeight;
     s.fontStyle = cs.fontStyle;
     s.color = cs.color;
+    s.width = width + 'px';
     s.lineHeight = t.h + 'px';
 
     const carry = { el: copy, x: t.x, y: t.y, dx, dy, rot: 0, scale: 1, age: 0 };
-    restyle(carry, text.length, dx !== 0 || dy !== 0);
+    copies.push(carry);
+    restyle(carry, text, cs, size, width, dx !== 0 || dy !== 0);
     drag(carry, 0);
     layer.appendChild(copy);
+
+    // The canvas estimate in restyle() can be a pixel or two off the real layout (kerning,
+    // synthesised bold or italic). This is the exact check: the text must not leave its box.
+    const over = copy.scrollWidth / width;
+    if (over > 1) s.fontSize = (parseFloat(s.fontSize) / over) * 0.99 + 'px';
 
     // Hiding (not removing) the original keeps its box, so the page does not reflow.
     hidden.push([
@@ -624,38 +671,67 @@
     return carry;
   }
 
-  // The copy starts out looking like the original (font, size, colour); this changes some of
-  // that. Whatever is not rolled here stays as it was, which is why most links end up in
-  // place, upright, and still recognisably themselves.
-  function restyle(carry, length, kicked) {
+  // Width of `text` set on one line in a CSS font. Measured on the canvas, so it costs the
+  // page no layout.
+  function textWidth(text, font) {
+    ctx.font = font;
+    return ctx.measureText(text).width;
+  }
+
+  // The copy starts out as an exact stand-in for the original: same font, size, colour and
+  // box (`width` wide). This changes some of that. Whatever is not rolled here stays as it
+  // was, which is why most links end up in place, upright, and still recognisably themselves.
+  function restyle(carry, text, cs, size, width, kicked) {
     const s = carry.el.style;
     const fx = THEMES[themeIndex].fx;
+    let family = cs.fontFamily;
+    let weight = cs.fontWeight;
+    let spacing = 0; // em
     let changed = false;
 
     const font = Math.random();
     if (font < 0.45) {
-      s.fontFamily = CFG.mono;
-      if (Math.random() < 0.4) s.letterSpacing = '.1em';
+      family = CFG.mono;
+      if (Math.random() < 0.4) spacing = 0.1;
       changed = true;
     } else if (font < 0.75) {
-      s.fontFamily = CFG.serif;
+      family = CFG.serif;
       changed = true;
     }
-    if (Math.random() < 0.15) s.fontWeight = 'bold';
+    if (Math.random() < 0.15) weight = 'bold';
 
-    const size = Math.random();
-    if (size < 0.22) carry.scale = rand(0.3, 0.45);
-    else if (size < 0.44) carry.scale = length <= 24 ? rand(1.5, 2) : rand(1.05, 1.15);
+    // A wider typeface, bold or letter-spacing must not push the text out of the link's box
+    // and over its neighbours, so the type is shrunk until it fits again.
+    if (family !== cs.fontFamily || weight !== cs.fontWeight || spacing) {
+      const plain = textWidth(text, `${cs.fontStyle} ${weight} ${size}px ${family}`);
+      // Letter-spacing is the first thing to go if it would make the type too small to read.
+      if (plain + spacing * size * text.length > width / 0.8) spacing = 0;
+      const w = plain + spacing * size * text.length;
+      s.fontFamily = family;
+      s.fontWeight = weight;
+      if (spacing) s.letterSpacing = spacing + 'em';
+      if (w > width) s.fontSize = (size * width * 0.98) / w + 'px';
+    }
+
+    const roll = Math.random();
+    if (roll < 0.2) {
+      carry.scale = rand(0.3, 0.45);
+    } else if (roll < 0.38 && text.length <= 24) {
+      // Big, but never past the right edge of the page.
+      const big = Math.min(rand(1.4, 1.9), (pageW - carry.x - 4) / width);
+      if (big > 1.15) carry.scale = big;
+    }
     if (carry.scale !== 1) changed = true;
 
     // Look: highlight bar, recolour, recolour in a thin box, or the link's own colour.
     // A link nothing else happened to always gets a colour, so no restyle is invisible.
     const look = changed ? Math.random() : Math.random() * 0.7;
     if (look < 0.25) {
+      // The bar is the link's own box plus a 2px rim, which takes up no room.
       const c = fx[(Math.random() * 2) | 0];
       s.background = c.fill;
+      s.boxShadow = `0 0 0 2px ${c.fill}`;
       s.color = c.ink;
-      s.padding = '0 .25em';
     } else if (look < 0.7) {
       const c = pick(fx);
       s.color = darkPage ? c.fill : c.deep;
@@ -665,8 +741,9 @@
       }
     }
 
-    // Most restyled links stay upright; kicked ones usually tumble.
-    if (Math.random() < (kicked ? 0.5 : 0.12)) {
+    // Links restyled by the thread mostly stay upright. Kicked ones are out of place, and
+    // upright text out of place just reads as a layout bug, so those nearly always tumble.
+    if (Math.random() < (kicked ? 0.85 : 0.1)) {
       const steep = !calm && Math.random() < 0.5;
       carry.rot = (steep ? rand(40, 80) : rand(6, 18)) * (Math.random() < 0.5 ? -1 : 1);
     } else {
@@ -681,7 +758,7 @@
       `rotate(${carry.rot * e}deg) scale(${1 + (carry.scale - 1) * e})`;
   }
 
-  // ───────────────────────────── Thread (archi §10.5) ─────────────────────────────
+  // ───────────────────────────── Thread (architecture §10.5) ─────────────────────────────
 
   // The line from the spider's head to one link at a time. The link is boxed while the
   // thread holds it, then restyled where it stands.
@@ -696,6 +773,7 @@
     x: 0, // attachment point on the link's box
     y: 0,
     nextAt: 0,
+    flash: 0, // 1..0 just after the held link changes
   };
   const settling = []; // copies restyled by the thread, still easing into their new look
 
@@ -724,7 +802,7 @@
             clamp(thread.hx, t.x, t.x + t.w) - thread.hx,
             clamp(thread.hy, t.y, t.y + t.h) - thread.hy
           );
-          if (d < CFG.threadMin || d > r) continue;
+          if (d < CFG.threadMin || d > r || !showing(t)) continue;
           if (chosen && t.link !== chosen.link) {
             if (!t.link) continue; // a word never replaces a link
             count = 0; // the first link replaces any word
@@ -780,21 +858,26 @@
       if (lost || thread.age >= CFG.threadOut + thread.hold) {
         t.holder = null;
         const carry = lost ? null : grab(t, 0, 0);
-        if (carry) settling.push(carry);
+        if (carry) {
+          settling.push(carry);
+          thread.flash = 1;
+        }
         thread.done = true;
         thread.age = 0;
       }
     } else {
+      thread.flash = Math.max(0, thread.flash - dt / CFG.threadOut);
       thread.ext = Math.min(thread.ext, 1 - thread.age / CFG.threadOut);
       if (thread.ext <= 0) {
         thread.ext = 0;
+        thread.flash = 0;
         thread.target = null;
         thread.nextAt = now + rand(CFG.threadPause[0], CFG.threadPause[1]);
       }
     }
   }
 
-  // ───────────────────────────── Renderer (archi §11) ─────────────────────────────
+  // ───────────────────────────── Renderer (architecture §11) ─────────────────────────────
 
   const tint = { leg: '', joint: '', body: '', head: '' };
 
@@ -836,12 +919,22 @@
     ctx.clearRect(0, 0, vw, vh);
     ctx.translate(-sx, -sy); // everything below is in document space
 
-    // The box around the link the thread is holding.
+    // The box around the link the thread is holding. It appears when the thread lands,
+    // closing in from slightly too big, and flashes once as the link changes.
     const prey = thread.target;
-    if (prey && !thread.done && prey.w) {
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = tint.head;
-      ctx.strokeRect(prey.x - 3, prey.y - 2, prey.w + 6, prey.h + 4);
+    if (prey && prey.w) {
+      if (!thread.done && thread.ext === 1) {
+        const landed = clamp((thread.age - CFG.threadOut) / 0.12, 0, 1);
+        const pad = 3 + 6 * (1 - smooth(landed));
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = tint.head;
+        ctx.strokeRect(prey.x - pad, prey.y - pad + 1, prey.w + pad * 2, prey.h + pad * 2 - 2);
+      } else if (thread.done && thread.flash > 0) {
+        ctx.globalAlpha = 0.45 * thread.flash;
+        ctx.fillStyle = tint.head;
+        ctx.fillRect(prey.x - 3, prey.y - 2, prey.w + 6, prey.h + 4);
+        ctx.globalAlpha = 1;
+      }
     }
 
     ctx.lineWidth = 2;
@@ -875,7 +968,7 @@
     const w = CFG.bodyWidth;
     ctx.save();
     ctx.translate(body.x, body.y);
-    ctx.rotate(body.angle);
+    ctx.rotate(body.angle + body.sway);
     ctx.beginPath();
     if (ctx.roundRect) ctx.roundRect(-l / 2, -w / 2, l, w, 4);
     else ctx.rect(-l / 2, -w / 2, l, w);
@@ -885,11 +978,11 @@
     ctx.strokeStyle = tint.body;
     ctx.stroke();
     ctx.fillStyle = tint.head;
-    dot(l / 2 - 9, 0, 3.6);
+    dot(l / 2 - 9, 0, 3.6 + thread.ext); // the head swells while the thread is out
     ctx.restore();
   }
 
-  // ───────────────────────────── Loop and lifecycle (archi §5, §12, §13) ─────────────────────────────
+  // ───────────────────────────── Loop and lifecycle (architecture §5, §12, §13) ─────────────────────────────
 
   function frame(now) {
     raf = requestAnimationFrame(frame);
@@ -931,12 +1024,49 @@
     if (e.key === 'Escape') destroy();
   };
 
-  function destroy() {
+  // Tells the extension's toolbar button whether the spider is out. On the demo page or from
+  // a bookmarklet there is no extension to tell.
+  function notify(on) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.id) return;
+      const sent = chrome.runtime.sendMessage({ webCrawler: on });
+      if (sent && sent.catch) sent.catch(() => {});
+    } catch (e) {
+      // The extension was reloaded or removed while the spider was out.
+    }
+  }
+
+  // Stops the spider at once, then puts the page back. Unless `instant`, the restyled links
+  // first fly home and the spider fades, so the page is seen to be repaired.
+  let running = true;
+  function destroy(instant) {
+    if (!running) return;
+    running = false;
     cancelAnimationFrame(raf);
     removeEventListener('pointermove', onPointer);
     removeEventListener('scroll', onScroll, true);
     removeEventListener('resize', onResize);
     removeEventListener('keydown', onKey, true);
+    delete window.__webCrawler;
+    notify(false);
+
+    // A hidden tab runs no transitions, and reduced motion asks for none.
+    if (instant === true || calm || document.hidden || !copies.length) {
+      restore();
+      return;
+    }
+    const ms = CFG.exitTime;
+    canvas.style.transition = `opacity ${ms}ms ease-out`;
+    canvas.style.opacity = '0';
+    for (const carry of copies) {
+      const s = carry.el.style;
+      s.transition = `transform ${ms}ms cubic-bezier(.3,.8,.3,1)`;
+      s.transform = `translate(${carry.x}px,${carry.y}px) rotate(0deg) scale(1)`;
+    }
+    setTimeout(restore, ms + 30);
+  }
+
+  function restore() {
     canvas.remove();
     layer.remove();
 
@@ -953,8 +1083,6 @@
       span.replaceWith(span.textContent);
     }
     for (const parent of parents) parent.normalize();
-
-    delete window.__webCrawler;
   }
 
   document.documentElement.append(layer, canvas);
@@ -964,5 +1092,6 @@
   addEventListener('resize', onResize);
   addEventListener('keydown', onKey, true);
   window.__webCrawler = { destroy, config: CFG, body, legs, thread };
+  notify(true);
   raf = requestAnimationFrame(frame);
 })();

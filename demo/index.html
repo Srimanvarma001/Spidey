@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Spider: demo page for the Web Crawler</title>
+<link rel="icon" href="../extension/icons/icon32.png">
 <style>
   :root { color-scheme: dark; }
   html { background: #000; }
@@ -33,20 +34,27 @@
     top: 16px;
     right: 16px;
     z-index: 10;
-    padding: 9px 14px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 7px 14px 7px 8px;
     font: inherit;
     color: #eaecf0;
-    background: #1b223d;
-    border: 1.5px solid #5b7cfa;
-    border-radius: 8px;
+    background: #141a38;
+    border: 1.5px solid #5a6eff;
+    border-radius: 10px;
     cursor: pointer;
+    transition: background .15s, border-color .15s;
   }
-  #release:hover { background: #262f55; }
+  #release:hover { background: #1f2752; }
+  #release:focus-visible { outline: 2px solid #46e2ff; outline-offset: 3px; }
+  #release.out { border-color: #ff3e6e; }
+  #release img { display: block; border-radius: 6px; }
 </style>
 </head>
 <body>
 
-<button id="release" type="button">🕷️ Release the spider</button>
+<button id="release" type="button"><img src="../extension/icons/icon48.png" alt="" width="26" height="26"><span>Release the spider</span></button>
 
 <h1>Spider</h1>
 <p class="note">A local stand-in for the references section of an encyclopedia article, for testing the crawler. Press the button to toggle the spider, or press Esc to put the page back.</p>
@@ -101,11 +109,25 @@
 
 <script>
   // Same mechanism as the bookmarklet: each load of crawler.js toggles the spider.
-  document.getElementById('release').addEventListener('click', () => {
+  const button = document.getElementById('release');
+  const label = button.querySelector('span');
+  const sync = () => {
+    const out = !!window.__webCrawler;
+    button.classList.toggle('out', out);
+    label.textContent = out ? 'Call it back' : 'Release the spider';
+  };
+  button.addEventListener('click', () => {
     const script = document.createElement('script');
     script.src = '../extension/crawler.js';
-    script.onload = () => script.remove();
+    script.onload = () => {
+      script.remove();
+      sync();
+    };
     document.body.appendChild(script);
+  });
+  // Esc also calls the spider back; the handler in crawler.js runs first.
+  addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') setTimeout(sync);
   });
   document.addEventListener('click', (e) => {
     if (e.target.closest('a[href="#"]')) e.preventDefault();
