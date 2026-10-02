@@ -34,7 +34,7 @@
 
 **Goals**
 
-- Reproduce the clip: an 8-legged spider with 2-segment legs that walks over a page, grips links, and leaves a trail of restyled, displaced text.
+- Reproduce the clip: an 8-legged spider with long, zigzag, 3-segment legs that walks over a page, shoots a thread from its head to one link at a time, and leaves a trail of restyled links behind it.
 - Work on **any** site with one click, not only on a demo page.
 - **Fully reversible.** One key (Esc) or a second click puts the page back exactly as it was.
 - One file, no dependencies, no build step. The same `crawler.js` runs from the extension, a bookmarklet, the demo page, or pasted into the console.
@@ -55,26 +55,31 @@ The brief was reconstructed from four frames. Reading those frames closely settl
 | Seen in the frames | Conclusion | Where it lands in the design |
 |---|---|---|
 | Blue rounded rectangle, tilted, with a bright dot at one end | Body is a rotated rect; the dot marks the head | [Renderer](#11-module-renderer) |
-| 8 polylines from the body, dots at the bends and tips | 2-segment legs; dots are knee and foot joints | [Legs](#9-module-legs) |
-| Leg tips end exactly on ISBNs, DOIs, titles, and a thin box is drawn around the element under a tip | Feet snap to page elements; a planted foot "grips" its element | [Legs §9.4](#94-choosing-where-to-land), [Renderer](#11-module-renderer) |
+| 8 thin polylines from the body, about 22 dots around it (close to 8 × 3) | Jointed legs with 3 segments each; dots are knee, ankle, foot | [Legs](#9-module-legs) |
+| The polylines fold back on themselves and cross each other; segments are long compared with the body | Long bones folded into a **zigzag** (knee and ankle bend opposite ways), not a smooth arch | [Legs §9.6](#96-inverse-kinematics) |
+| In every blue-theme frame exactly **one** link has a cyan box around it, and one long straight line runs to it from the head dot (0:04: the DOI in ref. 146, ~250 px away). Feet have no boxes | A **thread** from the head holds one link at a time; that is what selects links, not the feet | [Thread §10.5](#105-the-thread) |
+| One second later (0:05) that same DOI has a pink highlight and the box and line are on the DOI above it | After a short hold the held link is restyled and the thread moves on | [Thread §10.5](#105-the-thread) |
 | In ref. 147 the plain text *"Wright, M. Rosemary."*, *"mythandreligion.upatras.gr"* and *"Retrieved 3 January 2023"* stay put while the two **links** in the same line are gone | The original moves `<a>` elements as whole units. Plain text is mostly left alone | [Text layer §7.1](#71-two-kinds-of-target) |
 | Where a link was, there is a **blank gap** of the same width; surrounding text does not reflow | The original is hidden in place and a copy is animated | [Grab FX §10.1](#101-why-a-floating-copy-and-not-a-transform-on-the-original) |
 | A link title that wraps over two lines in the article appears as one long single-line banner | The moved copy is laid out on one line | [Grab FX §10.2](#102-pick-up) |
-| Displaced text shows new fonts (monospace, serif italic), new colours, solid highlight bars, thin outline boxes, and sizes from tiny to ~2× | Random restyle per grabbed element | [Grab FX §10.3](#103-restyle) |
-| Most displaced text sits close to where it started; a few pieces are rotated 40–80° | Small drag distance, mostly small rotations with occasional large ones | [Grab FX §10.3](#103-restyle) |
-| Legs are orange with green joints in one frame, light blue with pink joints in the others | The spider's colours change over time | [Renderer §11.2](#112-themes) |
+| Changed links show monospace or serif fonts, solid highlight bars, recoloured text, thin outline boxes, and sizes from tiny (~0.35×) to ~2× | Random restyle per link, each property rolled separately | [Grab FX §10.3](#103-restyle) |
+| Of about twelve changed links in the 0:04 frame, ten are still exactly where they were and upright; two are moved and rotated (one ~10°, one ~65°) | Most restyles happen **in place**. Displacement and tumbling are the exception | [Grab FX §10.3](#103-restyle) |
+| Scaled text starts at the left edge of the gap it left | Unrotated copies scale from their left edge | [Grab FX §10.3](#103-restyle) |
+| Blue-legged frames use only cyan, pink and red on the text; the orange-legged frame uses orange and green | The text colours belong to the spider's theme | [Renderer §11.2](#112-themes) |
+| Legs are orange with green joints in one frame, light blue with pink joints in the others | The clip alternates two themes | [Renderer §11.2](#112-themes) |
 | The page scrolls during the clip and the spider stays in view | The spider chases the viewport | [Body §8.2](#82-goals) |
 
-Two points differ from the brief on purpose:
+Three points differ from the brief on purpose:
 
-1. **Links are first-class targets.** The brief wraps every word. The frames show links moving as units, so links are preferred; plain words are a secondary target so the spider still has something to grip on pages with few links.
-2. **Words are moved as floating copies**, not by transforming the original `<span>` as `inline-block`. See [§10.1](#101-why-a-floating-copy-and-not-a-transform-on-the-original).
+1. **Links are the targets.** The brief wraps every word. The frames show only links changing, so where a page has links, plain text is not touched at all. Words are used only where links are scarce ([§7.1](#71-two-kinds-of-target)).
+2. **Changed text is a floating copy**, not the original `<span>` transformed as `inline-block`. See [§10.1](#101-why-a-floating-copy-and-not-a-transform-on-the-original).
+3. **The thread, not the feet, picks most links.** The brief has feet grab the words they stand on. The frames show a single boxed link on a line from the head. Feet still kick a link now and then, which is where the few displaced, tumbled pieces come from.
 
 ---
 
 ## 3. System overview
 
-Everything lives in one IIFE in `extension/crawler.js`. Internally it is five modules that share a small amount of state and are driven by one `requestAnimationFrame` loop.
+Everything lives in one IIFE in `extension/crawler.js`. Internally it is six modules that share a small amount of state and are driven by one `requestAnimationFrame` loop.
 
 ```
                          ┌───────────────────────────────────────────┐
@@ -94,18 +99,22 @@ Everything lives in one IIFE in `extension/crawler.js`. Internally it is five mo
                 │ nearest()                   ┌───────────────────────────┐
                 └────────────────────────────▶│ LEGS  (×8)                │
                                               │  gait gate, step trigger  │
-                                              │  step tween, 2-bone IK    │
+                                              │  step tween, 3-bone IK    │
                                               └──────┬─────────────┬──────┘
-                                           on lift   │             │ hip/knee/foot
+                                        kick on lift │             │ leg joints
                                                      ▼             ▼
-                              ┌──────────────────────────┐  ┌──────────────────┐
-                              │ GRAB FX                  │  │ RENDERER         │
-                              │  hide original           │  │  fixed <canvas>  │
-                              │  floating copy + restyle │  │  grips, legs,    │
-                              │  drag along the step     │  │  joints, body    │
-                              └──────────────────────────┘  └──────────────────┘
+┌──────────────────────────┐  ┌──────────────────────────┐  ┌──────────────────┐
+│ THREAD                   │  │ GRAB FX                  │  │ RENDERER         │
+│  pick a link near head   │─▶│  hide original           │  │  fixed <canvas>  │
+│  shoot, hold, restyle    │  │  floating copy + restyle │  │  box, thread,    │
+│  pull back, pause        │  │  ease into the new look  │  │  legs, joints,   │
+└────────────┬─────────────┘  └──────────────────────────┘  │  body            │
+             │ line + boxed link                            └──────────────────┘
+             └─────────────────────────────────────────────────────▲
                                  writes to the DOM             draws pixels only
 ```
+
+The thread also reads the Text layer's grid to find its next link.
 
 Two things are added to the page, both as children of `<html>`:
 
@@ -169,7 +178,7 @@ The spider never starts on its own. It only runs after a user action.
 
 | Space | Origin | Used for |
 |---|---|---|
-| **Document** | top-left of the page | body, hips, knees, feet, target rects, floating copies, wander goal |
+| **Document** | top-left of the page | body, hips, knees, ankles, feet, target rects, floating copies, wander goal |
 | **Client** | top-left of the viewport | the raw pointer position, `getClientRects()` results, the canvas |
 | **Body-local** | body centre, +x = forward, +y = the spider's right | hip offsets and rest-spot offsets |
 
@@ -210,6 +219,16 @@ A link counts as a unit when all of these hold, otherwise the walker descends in
 
 Words must contain at least one letter or digit. Bare punctuation stays as text.
 
+**When words are used at all** is set by `CFG.words`:
+
+| Value | Behaviour |
+|---|---|
+| `'auto'` (default) | Each scan counts the links in the scan region. With `minLinks` (12) or more, no text is wrapped and plain text is never touched, as in the clip. With fewer, words are wrapped so the spider has something to work on |
+| `false` | Links only, everywhere |
+| `true` | Words are always wrapped, alongside links |
+
+On a link-rich page such as a Wikipedia references list, `'auto'` means the DOM is not modified at all until a link is actually restyled.
+
 ### 7.2 The target record
 
 ```js
@@ -218,8 +237,8 @@ Words must contain at least one letter or digit. Bare punctuation stays as text.
   link,    // true for links
   x, y,    // top-left of its first line box, document space
   w, h,    // size of that box (w = 0 means "not visible right now")
-  leg,     // the leg that has reserved or is standing on it, or null
-  gone,    // true once it has been grabbed; never targeted again
+  holder,  // who has reserved it: a leg standing on or stepping to it, or the thread; else null
+  gone,    // true once it has been restyled; never targeted again
   q,       // id of the last nearest() query that visited it (dedupe stamp)
 }
 ```
@@ -241,6 +260,7 @@ phase 1  READ   TreeWalker over <body> (elements + text nodes)
                            if it is a unit link → collect it, do not descend
                            otherwise descend
                  text:     collect if it contains a letter or digit
+                 (count the links in the region; stop here if words are not needed)
 phase 2  READ   for each collected text node:
                  drop it if its parent is a flex/grid container (see below)
                  drop it if its own Range rect is outside the scan region
@@ -278,7 +298,7 @@ A uniform hash grid with `cell` = 96 px.
 Scans the cells covering the circle and returns the best free target plus the exact point a foot should land on.
 
 - The landing point is the query point clamped into the rect horizontally (3 px inset), on the rect's vertical centre line. Feet therefore land on the near end of a long link, not always its middle.
-- A target is rejected if it is `gone`, reserved by another leg, equal to `skip` (the word the foot just left), further than `radius` from the query, or further than `reach` from `(hx, hy)` (the hip, so a leg is never asked to reach a spot it cannot touch).
+- A target is rejected if it is `gone`, reserved by another leg or by the thread, equal to `skip` (the word the foot just left), further than `radius` from the query, or further than `reach` from `(hx, hy)` (the hip, so a leg is never asked to reach a spot it cannot touch).
 - **Links win.** A word's distance is scored as `d · 1.6 + 6`. A word is chosen only when no link is comparably close.
 
 ---
@@ -340,12 +360,13 @@ Eight legs, four per side, built once.
 
 | Constant | Value | Meaning |
 |---|---|---|
-| `upperLen` | 62 px | hip → knee |
-| `lowerLen` | 84 px | knee → foot |
-| `REACH` | 146 px | their sum; the furthest a foot can be from its hip |
-| `restRadius` | 98 px | distance of the rest spots from the body centre |
+| `upperLen` | 78 px | hip → knee |
+| `midLen` | 86 px | knee → ankle |
+| `lowerLen` | 78 px | ankle → foot |
+| `REACH` | 242 px | their sum; the furthest a foot can be from its hip |
+| `restRadius` | 118 px | distance of the rest spots from the body centre |
 
-The rest spots sit at about two-thirds of full reach, so legs are visibly bent at rest and have room to stretch before they must step.
+The bones are long and the rest spots are close: a resting foot is at roughly **half** of full reach. Each leg therefore carries about 120 px of slack, which it has to fold away. That folding is what produces the tangled, crossing, zigzag look of the clip, where single segments are longer than the body. A short-boned leg at the same rest distance would be nearly straight and look like a stick insect.
 
 ### 9.2 Per-leg state
 
@@ -353,11 +374,12 @@ The rest spots sit at about two-thirds of full reach, so legs are visibly bent a
 {
   side,               // −1 left, +1 right
   group,              // 0 or 1, the tetrapod group
-  bend,               // ±1, which side of the hip→foot line the knee is on
+  bend,               // ±1, which side of the hip→foot line the knee is on (the ankle is opposite)
   hipX, hipY,         // body-local
   restX, restY,       // body-local
   jitter,             // 0.85–1.15, de-synchronises step thresholds
-  hx, hy, kx, ky,     // hip and knee, document space, recomputed every frame
+  hx, hy,             // hip, document space, recomputed every frame
+  kx, ky, ax, ay,     // knee and ankle, document space, recomputed every frame
   x, y,               // foot, document space; constant while planted
   stepping, t,        // step tween state, t in 0..1
   stepTime,           // duration of the current step
@@ -366,7 +388,7 @@ The rest spots sit at about two-thirds of full reach, so legs are visibly bent a
   plantErr,           // how far the foot was from its rest spot when it landed
   target,             // target the planted foot is standing on
   next,               // target reserved for the step in progress
-  carry,              // floating copy being dragged by this step
+  carry,              // floating copy this step is kicking along, if any
 }
 ```
 
@@ -376,7 +398,7 @@ The rest spots sit at about two-thirds of full reach, so legs are visibly bent a
                     stretched
                  or (behind and other group planted)
    ┌─────────┐ ─────────────────────────────────────▶ ┌──────────┐
-   │ PLANTED │        startStep(): lift, maybe grab    │ STEPPING │
+   │ PLANTED │        startStep(): lift, maybe kick    │ STEPPING │
    └─────────┘ ◀───────────────────────────────────── └──────────┘
                       t reaches 1: plant(), drop
 ```
@@ -415,7 +437,9 @@ hit     = nearest(aim, snapRadius 64, hipThen, 0.9 · REACH, skip = word just le
 land    = hit ? hit.point : aim
 ```
 
-The lead makes the foot land ahead of its rest spot, so the body walks *over* it before it falls behind. If a target was hit it is reserved (`target.leg = leg`) for the whole flight, so two feet never choose the same word.
+The lead makes the foot land ahead of its rest spot, so the body walks *over* it before it falls behind. If a target was hit it is reserved (`target.holder = leg`) for the whole flight, so two feet never choose the same link, and the thread never takes a link a foot is on.
+
+Feet do **not** draw a box around what they stand on, and most of the time they leave it alone. On lifting, a foot kicks the link it was standing on with probability `linkKickChance` (0.2; `wordKickChance` 0.3 for words). See [§10.2](#102-pick-up).
 
 ### 9.5 Step tween
 
@@ -428,22 +452,41 @@ lift  = sin(π · t)
 
 ### 9.6 Inverse kinematics
 
-Two bones, solved with the law of cosines. `a` = upper, `b` = lower, `d` = hip → foot distance clamped to `(|a − b|, a + b)`:
+Each leg has **three bones and three visible joints**: hip → knee → ankle → foot.
+
+The building block is the two-bone solve (`solveJoint`), by the law of cosines. For bones `a` and `b` between a start and an end point, with `d` = their distance clamped to `(|a − b|, a + b)`:
 
 ```
-base  = atan2(foot − hip)
-A     = acos((a² + d² − b²) / (2·a·d))       angle at the hip
-knee  = hip + a · (cos, sin)(base + bend · A)
+base  = atan2(end − start)
+A     = acos((a² + d² − b²) / (2·a·d))       angle at the start
+joint = start + a · (cos, sin)(base + bend · A)
 ```
 
-`bend` is fixed per leg, so a knee can never flip to the other side:
+Three bones have one more degree of freedom than a foot position pins down, so there are infinitely many valid poses. `solveLeg` picks one by solving two two-bone problems in sequence:
+
+```
+stretch = |foot − hip| / REACH                               0 = tucked in, 1 = straight
+virtual = (midLen + lowerLen) · (0.55 + 0.45 · stretch²)
+
+knee    = solveJoint(hip,  foot, upperLen, virtual,   bend)   lower two bones treated as one
+ankle   = solveJoint(knee, foot, midLen,   lowerLen, −bend)   then split that one into two
+```
+
+- The knee is placed as if the two lower bones were a single bone of length `virtual`. After that solve the knee is exactly `virtual` away from the foot, so the second solve always has a valid triangle.
+- `virtual` shrinks as the leg tucks in. A short `virtual` leaves slack in the lower two bones, and the ankle bends to take it up. At full stretch `virtual` equals `midLen + lowerLen` and the whole leg is a straight line.
+- Why `0.55 + 0.45 · stretch²` is safe: the first triangle needs `upperLen + virtual ≥ d`. That expression equals `d` at `stretch = 1` and exceeds it everywhere below, so the foot is always reachable.
+- The two solves use **opposite** `bend` signs. The knee goes to one side of the hip → foot line and the ankle to the other, so the leg is a zigzag (an "N" or "Z"). The same sign for both would give a smooth arch; that was the first version, and it does not match the clip.
+
+Worked example at rest (`d` ≈ 118): `stretch` ≈ 0.49, `virtual` ≈ 108. The knee sits about 63° off the hip → foot line, and the ankle about 46° off the knee → foot line on the other side. Segments of neighbouring legs cross, as in the frames.
+
+`bend` is fixed per leg, so a joint can never flip to the other side:
 
 - front two pairs: `bend = −side` → knees point forward
 - back two pairs:  `bend = +side` → knees point backward
 
-That gives the arched, splayed silhouette of a real spider seen from above.
+**Hard clamp.** If the foot is further than `REACH` from the hip, the solver pulls the foot back onto the reach circle before solving. At scurry speed the body covers ~21 px per frame and can outrun a foot that is mid-step; without the clamp the last leg segment visibly stretches. With it, `|foot − hip| ≤ REACH` holds on every frame.
 
-**Hard clamp.** If the foot is further than `REACH` from the hip, the solver pulls the foot back onto the reach circle before solving. At scurry speed the body covers ~21 px per frame and can outrun a foot that is mid-step; without the clamp the lower leg segment visibly stretches. With it, `|foot − hip| ≤ REACH` holds on every frame (measured: exactly 146.0 px maximum during a 1300 px/s scurry).
+Measured over 1100 simulated frames: every bone stays at its configured length (error below 0.0001 px) and `|foot − hip|` peaks at 232.6 px, inside the 242 px reach.
 
 ---
 
@@ -465,7 +508,14 @@ Extra benefits: undo is trivial (remove the layer, restore `visibility`), the co
 
 ### 10.2 Pick up
 
-Called from `startStep()` for the target the foot was standing on, with probability `linkGrabChance` (0.75) for links and `wordGrabChance` (0.3) for words.
+`grab(target, dx, dy)` turns a target into a floating copy. It has two callers:
+
+| Caller | When | `dx, dy` | Result |
+|---|---|---|---|
+| **Thread** ([§10.5](#105-the-thread)) | its hold on a link ends | `0, 0` | restyled **in place** |
+| **Foot kick** (`startStep()`) | a foot lifts off a link, with probability `linkKickChance` 0.2 (`wordKickChance` 0.3) | step vector × random 0.3–0.9 | restyled and **dragged** part of the way along the step |
+
+The thread is the main source (about one link per second). Kicks are the minority that end up out of place.
 
 ```
 text  = el.innerText, whitespace collapsed
@@ -476,38 +526,75 @@ copy  = <span> with  all: initial; position: absolute; left: 0; top: 0;
 copy.transform = translate(target.x, target.y)
 original       → visibility: hidden !important       (previous inline value saved)
 target.gone    = true
-leg.carry      = { el, x, y, dx, dy, rot, scale }
+returns          { el, x, y, dx, dy, rot, scale, age }      the copy's animation record
 ```
 
-`dx, dy` = the step vector × a random 0.3–0.9. The word is kicked along with the foot but lands short of it, which keeps displaced text near its origin, as in the clip.
+Because the copy starts as a pixel-accurate stand-in for the original, anything the restyle does not change stays as it was.
 
 ### 10.3 Restyle
 
-Applied once, at pick-up.
+Applied once, at pick-up. Each property is rolled **independently**, and the default for each is "leave it alone". That is what makes most links end up in place, upright, and recognisably themselves, with only one or two things different.
 
 | Property | Rule |
 |---|---|
-| Font | random from: system monospace, Courier New, Georgia, Times New Roman, Impact |
-| Italic | 30 % |
-| Look | 35 % solid **banner** (palette background, dark text, small padding) · 25 % coloured text + 1.5 px **outline box** · 15 % coloured text + translucent tint · 25 % coloured text only |
-| Letter-spacing | 0.08 em, 20 % |
-| Scale | 30 % big (1.4–2.3×, capped at 1.2× for text over 24 chars) · 20 % tiny (0.4–0.65×) · 50 % about normal (0.9–1.15×) |
-| Rotation | 30 % large (±80°) · 70 % slight (±9°) |
+| Font | 45 % monospace (Courier New), and 40 % of those get 0.1 em letter-spacing · 30 % serif (Georgia) · 25 % unchanged |
+| Weight | 15 % bold |
+| Scale | 22 % tiny (0.3–0.45×) · 22 % big (1.5–2×, or 1.05–1.15× for text over 24 chars) · 56 % unchanged |
+| Look | 25 % solid **highlight bar** (theme fill, dark ink of the same hue, small padding) · 35 % text **recoloured** · 10 % recoloured inside a 1 px **outline box** · 30 % the link's own colour |
+| Rotation | thread: 12 % · kick: 50 %. When it happens: half slight (±6–18°), half steep (±40–80°) |
+| Scale origin | unrotated copies scale from their **left edge**, so a tiny copy sits at the start of the gap it left; rotated copies turn about their centre |
 
-Palette (dark pages): `#4fd1ff #ff4f8b #5be37d #ff8a3d #b48cff`.
-Palette (light pages): `#0b7fc2 #d81b60 #1a8f3c #d9480f #6f42c1`, with white banner text.
+A link that drew "unchanged" for both font and scale is forced into one of the coloured looks, so no restyle is invisible. Italics are never added or removed: an italic book title stays italic.
 
-Page darkness is detected once at init: walk up from the element at the centre of the viewport to the first non-transparent `background-color` and test its luminance.
+Colours come from the active spider theme ([§11.2](#112-themes)), so the text always matches the spider:
 
-### 10.4 Drag and drop
+| Theme | Highlight bars | Text recolour |
+|---|---|---|
+| Blue / pink | cyan `#43dcff`, pink `#ff3f7f` | cyan, pink, red `#ff3b4e` |
+| Orange / green | orange `#ff7a45`, green `#3fd673` | orange, green, red |
 
-While the leg is stepping, with the same eased `e` as the foot:
+Each colour has three forms: `fill` (the bar, and text on dark pages), `ink` (dark text on top of a bar), `deep` (text on light pages, where the bright fills would be unreadable). Page darkness is detected once at init: walk up from the element at the centre of the viewport to the first non-transparent `background-color` and test its luminance.
+
+### 10.4 Easing into the new look
+
+A copy is never snapped to its final pose. `drag(carry, e)` interpolates all three components with one eased value `e` in 0..1:
 
 ```
 transform = translate(x + dx·e, y + dy·e) rotate(rot·e deg) scale(1 + (scale − 1)·e)
 ```
 
-When the foot plants, the copy stays where it is permanently, `will-change` is removed (so hundreds of dropped words do not each hold a compositor layer), and `leg.carry` is cleared. A dropped copy is not a target; each element is displaced once.
+- **Kicked** copies use the foot's own step tween for `e`, so the link visibly travels with the foot.
+- **Thread** copies go into a `settling` list and ease over `settleTime` (0.22 s).
+
+When it finishes, the copy stays put permanently and `will-change` is removed (so hundreds of copies do not each hold a compositor layer). A finished copy is not a target; each element is changed once.
+
+### 10.5 The thread
+
+One line from the spider's head to one link at a time. This is the single most recognisable thing in the frames: the cyan box with a straight line running to it.
+
+```
+            pickPrey()               age ≥ threadOut + hold            ext reaches 0
+  ┌──────┐ ───────────▶ ┌─────────────────────────┐ ───────────▶ ┌───────────┐ ─────────▶ idle
+  │ IDLE │              │ OUT, then HOLD          │   grab(t,0,0) │ PULL BACK │   pause 150–600 ms
+  └──────┘              │ line grows over 0.12 s, │   restyle     │ line      │
+                        │ link is boxed           │   in place    │ shrinks   │
+                        └─────────────────────────┘               └───────────┘
+```
+
+State: `{ target, age, hold, done, ext, hx, hy, x, y, nextAt }`. `ext` is how much of the line is drawn, 0..1. `(hx, hy)` is the head; `(x, y)` is where the line meets the link.
+
+**Choosing a link (`pickPrey`).** Candidates are free targets that are
+
+- between `threadMin` (60 px) and `threadRange` (280 px) from the head, measured to the nearest point of their box, and
+- vertically inside the viewport, so the change is seen.
+
+One is chosen uniformly at random by reservoir sampling over the grid cells in range, so no candidate list is allocated. Links beat words: the first link seen discards any word chosen so far, and a word never replaces a link. Random rather than nearest, because nearest would make the thread sweep predictably outward from the body; random gives the mix of short and very long lines seen in the clip.
+
+**Holding.** The chosen link is reserved (`holder = thread`), so no foot lands on it. The line attaches to the point of the link's box nearest the head, recomputed every frame as the spider walks, so the line slides along the box edge. Hold time is random in `threadHold` (0.3–0.7 s). The spider keeps walking during the hold, so the line can stretch past `threadRange` (measured up to ~306 px).
+
+**Release.** `grab(target, 0, 0)`, the copy goes to `settling`, and the line pulls back in 0.12 s. If the link disappears first (page re-render), the thread just pulls back.
+
+Rate: `threadOut + hold + threadOut + pause` ≈ 1.1 s per link, close to the clip, where the boxed link is a different one in frames one second apart.
 
 ---
 
@@ -517,20 +604,23 @@ One canvas, sized `innerWidth × innerHeight` CSS pixels and backed by `× devic
 
 ### 11.1 Draw order (back to front)
 
-1. **Grips**: for every planted leg standing on a target, a 1.5 px box around the target rect in the head colour.
-2. **Legs**: polyline hip → knee → foot, 2.4 px, round caps and joins.
-3. **Joints**: 3.2 px dots at the knee and foot. The foot dot grows by up to 2.2 px with `lift`, which reads as the foot coming off the page.
-4. **Body**: rounded rect `bodyLength × bodyWidth` (52 × 18), rotated to the heading, translucent dark fill, 2.5 px stroke.
-5. **Head**: 3.6 px dot near the front end.
+1. **Box**: a 2 px rectangle in the head colour around the link the thread is holding, 3 px outside its rect.
+2. **Thread**: a 2 px line from the head toward the link, drawn to `ext` of its length, in the leg colour.
+3. **Legs**: polyline hip → knee → ankle → foot, 2 px, round caps and joins. Thread and legs are one path and one stroke call.
+4. **Joints**: 3 px dots at the knee, ankle and foot. The foot dot grows by up to 1.5 px with `lift`, which reads as the foot coming off the page.
+5. **Body**: rounded rect `bodyLength × bodyWidth` (52 × 18), rotated to the heading, translucent blue fill, 2.5 px stroke.
+6. **Head**: 3.6 px dot near the front end. The thread starts here.
 
 ### 11.2 Themes
 
-| Theme | Legs | Joints | Body | Head / grips |
-|---|---|---|---|---|
-| A | light blue | pink | blue | cyan |
-| B | orange | green | blue | magenta |
+| Theme | Legs / thread | Joints | Body | Head / box | Text colours |
+|---|---|---|---|---|---|
+| A (default) | light blue `rgb(86,182,246)` | pink `rgb(255,62,110)` | blue `rgb(78,98,242)` | cyan `rgb(70,226,255)` | cyan, pink, red |
+| B | orange | green | blue | magenta | orange, green, red |
 
-Both come straight from the frames. The active theme advances every `themeEvery` (6 s) and the colours are linearly blended over the last 10 % of each period, so the change is a quick fade and not a pop.
+Both come straight from the frames. A theme is one object that holds the spider's colours **and** the `fx` colours used on text, so the two can never drift apart.
+
+`themeEvery` is `Infinity` by default: the spider stays on theme A, the look of the 0:04 reference frame. Set it to `6000` to alternate A and B every six seconds as the full clip does; the colours then blend over the last 10 % of each period, so the change is a quick fade and not a pop. Text restyled during theme B gets theme B's colours.
 
 ---
 
@@ -547,12 +637,13 @@ function frame(now) {
   else if (now ≥ measureAt) measure();
 
   updateBody(dt, now);                       // goal → velocity → position → heading
-  updateLegs(dt, now);                       // hips, step logic, tween, drag carried word, IK, fidget
+  updateLegs(dt, now);                       // hips, step logic, tween, kicked copy, IK, fidget
+  updateThread(dt, now);                     // head position, settling copies, pick / hold / release
   draw(now);
 }
 ```
 
-Order matters: the body moves first, so hips and rest spots used by the legs are current, and the renderer sees a consistent pose.
+Order matters: the body moves first, so the hips, rest spots and head position used by the legs and the thread are current, and the renderer sees a consistent pose.
 
 **Events**
 
@@ -577,15 +668,15 @@ Every change to the page is recorded as it is made, so `destroy()` can reverse a
 | event listeners, rAF | — | removed / cancelled |
 | `window.__webCrawler` | — | deleted |
 
-After `destroy()` the DOM is identical to what it was before injection: on the demo page `document.body.innerHTML` compares equal, character for character, before and after a run that displaced ~60 elements and wrapped ~670 words.
+After `destroy()` the DOM is identical to what it was before injection: on the demo page `document.body.innerHTML` compares equal, character for character, before and after a run that restyled ~40 links (and, in the earlier words-on configuration, wrapped ~670 words).
 
-`window.__webCrawler` is `{ destroy, config, body, legs }`. `body` and `legs` are the live simulation objects, exposed for debugging and for tests.
+`window.__webCrawler` is `{ destroy, config, body, legs, thread }`. `body`, `legs` and `thread` are the live simulation objects, exposed for debugging and for tests.
 
 ---
 
 ## 14. Performance
 
-Budget: 16.6 ms per frame. Measured on the demo page: about 0.7 ms per frame for simulation plus canvas drawing, averaged over 480 frames including the initial scan.
+Budget: 16.6 ms per frame. Measured on the demo page: about 0.2 ms per frame for simulation plus canvas drawing, averaged over 720 frames including the initial scan. (It was 0.7 ms when every word was wrapped; with `words: 'auto'` a link-rich page needs no wrapping.)
 
 | Risk | Mitigation |
 |---|---|
@@ -630,14 +721,19 @@ All constants are in the `CFG` object at the top of `crawler.js`.
 
 | You want | Change |
 |---|---|
-| A bigger or smaller spider | `upperLen`, `lowerLen`, `restRadius`, `bodyLength`, `bodyWidth` together |
-| A calmer page (less chaos) | lower `linkGrabChance` / `wordGrabChance` |
-| Links only, like the clip | `words: false` |
-| Feet that reach further for text | raise `snapRadius` (keep it below `REACH − restRadius`) |
+| A bigger or smaller spider | `upperLen`, `midLen`, `lowerLen`, `restRadius`, `bodyLength`, `bodyWidth` together |
+| Legs that look more tangled | raise the three bone lengths, or lower `restRadius` (more slack to fold) |
+| Straighter, tidier legs | lower the bone lengths toward `restRadius / 2` each |
+| Links changing faster or slower | `threadHold` and `threadPause` |
+| Longer or shorter thread lines | `threadRange` and `threadMin` |
+| More text knocked out of place | raise `linkKickChance` |
+| Nothing ever out of place | `linkKickChance: 0`, `wordKickChance: 0` |
+| Plain words changed too, on every page | `words: true` |
+| Never touch plain text | `words: false` |
 | Quicker, more nervous steps | lower `stepDist` and `stepTime` |
 | Long loping strides | raise `stepDist` and `lead` |
 | A lazier follower | lower `followSpeed`, lower `steer` |
-| Constant colours | set `themeEvery` to `Infinity` |
+| The orange/green phase of the clip as well | set `themeEvery` to `6000` |
 
 ---
 
@@ -654,18 +750,30 @@ All constants are in the `CFG` object at the top of `crawler.js`.
 
 ## 18. Test checklist
 
-Checked on the demo page in Chrome, with the frame loop driven by a stepped clock (60 simulated fps):
+Checked on the demo page in Chrome, with the frame loop driven by a stepped clock (60 simulated fps).
 
-- [x] Spider enters from the top, walks, feet land on links, grip boxes appear.
-- [x] Grabbed links leave a blank gap; surrounding text does not move; no scrollbar appears.
+With the current build (thread, zigzag legs):
+
+- [x] Spider enters from the top and walks; legs are zigzags with three dots each.
+- [x] One link at a time is boxed with a line from the head; about a second later it is restyled and another is boxed.
+- [x] Screenshot compared side by side with the 0:04 reference frame.
+- [x] Restyled links leave a blank gap; surrounding text does not move; no scrollbar appears.
+- [x] On the link-rich demo page no words are wrapped (`[data-wc="w"]` count is 0).
+- [x] Bones keep their lengths; `|foot − hip|` stays inside `REACH`.
+- [x] Second injection turns it off; `[data-wc]` count is 0 and `body.innerHTML` is unchanged.
+
+Checked on the earlier build only (the code involved has not changed since, but these were not re-run):
+
 - [x] Pointer follow: the body settles within ~16 px of the cursor.
 - [x] Standing still: ~1.4 steps per second in total (fidget only), body speed 0.
-- [x] Scroll 900 px away: it scurries back into view; `|foot − hip|` never exceeds `REACH`.
-- [x] Second injection turns it off; `[data-wc]` count is 0 and `body.innerHTML` is unchanged.
+- [x] Scroll 900 px away: it scurries back into view.
 - [x] Esc turns it off.
+- [x] Word wrapping and its undo (now only reached on pages with few links).
 
 Still to check by hand:
 
+- [ ] Real-time motion in a foreground tab (the test tab was in the background, so nothing was watched live).
+- [ ] A page with few links, where `words: 'auto'` switches word targets on.
 - [ ] Loaded as an unpacked extension: icon click on, icon click off, `Alt+Shift+S`.
 - [ ] Wikipedia *Spider* article, dark mode, references section: smooth while scrolling.
 - [ ] A light-themed page: displaced text is readable (light palette in use).
@@ -678,7 +786,7 @@ Still to check by hand:
 Carried over from the brief, in rough order of effort:
 
 1. **Sound**: a soft tick on each `plant()`.
-2. **Silk**: record the sequence of gripped targets and draw thin lines between their drop points.
+2. **Silk**: record the sequence of links the thread has held and leave thin lines between them.
 3. **Drag the spider** with the mouse; click to spawn more (the leg and body code is already instance-shaped; it needs wrapping in a factory).
 4. **Eating**: grabbed words shrink into the body, and the body scale grows.
 5. **Other creatures**: crab (lateral rest spots, sideways steering), centipede (chain of bodies, follow-the-leader).

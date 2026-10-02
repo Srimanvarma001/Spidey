@@ -28,47 +28,75 @@
     turnRate: 7,
     mouseIdle: 2500, // ms without pointer movement before it wanders off
 
-    // Legs
-    upperLen: 62,
-    lowerLen: 84,
-    restRadius: 98,
+    // Legs: long bones folded into a zigzag, so a leg can also stretch out almost straight
+    upperLen: 78, // hip → knee
+    midLen: 86, // knee → ankle
+    lowerLen: 78, // ankle → foot
+    restRadius: 118,
     restAngles: [0.55, 1.15, 1.9, 2.6], // rad from the heading, front pair to back pair
-    stepDist: 46,
+    stepDist: 50,
     stepTime: 0.15, // s
     minStepTime: 0.06,
     lead: 0.16, // s of body travel a foot lands ahead of its rest spot
     snapRadius: 64,
 
     // Text layer
-    words: true, // false = links only
+    words: 'auto', // true = plain words are targets too, false = links only,
+    minLinks: 12, //   'auto' = words only where fewer than minLinks links are in range
     scanMargin: 500,
     cell: 96,
     maxLinkChars: 90,
     remeasureEvery: 2500, // ms
 
-    // Grab FX
-    linkGrabChance: 0.75,
-    wordGrabChance: 0.3,
-    fonts: [
-      'ui-monospace, "Cascadia Mono", Consolas, Menlo, monospace',
-      '"Courier New", Courier, monospace',
-      'Georgia, "Times New Roman", serif',
-      '"Times New Roman", Times, serif',
-      'Impact, "Arial Narrow", sans-serif',
-    ],
-    darkPalette: ['#4fd1ff', '#ff4f8b', '#5be37d', '#ff8a3d', '#b48cff'],
-    lightPalette: ['#0b7fc2', '#d81b60', '#1a8f3c', '#d9480f', '#6f42c1'],
+    // Thread: the line from the head to the link it is about to restyle
+    threadRange: 280,
+    threadMin: 60,
+    threadOut: 0.12, // s to shoot out, and to pull back
+    threadHold: [0.3, 0.7], // s the link stays boxed before it changes
+    threadPause: [150, 600], // ms between links
+    settleTime: 0.22, // s a restyled link takes to ease into its new size and angle
+
+    // Feet: a lifting foot can kick the link it stood on out of place
+    linkKickChance: 0.2,
+    wordKickChance: 0.3,
+
+    // Restyle
+    mono: '"Courier New", Courier, monospace',
+    serif: 'Georgia, "Times New Roman", serif',
 
     // Renderer
-    themeEvery: 6000, // ms
+    themeEvery: Infinity, // ms per theme; 6000 alternates blue/pink and orange/green like the clip
   };
 
+  // A theme colours the spider and the text it touches. In `fx`: `fill` is a highlight bar and
+  // the text colour on dark pages, `ink` is text on top of a fill, `deep` is the text colour on
+  // light pages. Only the first two entries are used as highlight bars.
   const THEMES = [
-    { leg: [79, 195, 255], joint: [255, 79, 123], body: [91, 124, 250], head: [94, 240, 255] },
-    { leg: [255, 122, 89], joint: [74, 222, 128], body: [91, 124, 250], head: [255, 79, 216] },
+    {
+      leg: [86, 182, 246],
+      joint: [255, 62, 110],
+      body: [78, 98, 242],
+      head: [70, 226, 255],
+      fx: [
+        { fill: '#43dcff', ink: '#0a3f4d', deep: '#0b7fa6' },
+        { fill: '#ff3f7f', ink: '#7c0e3c', deep: '#d81b60' },
+        { fill: '#ff3b4e', ink: '#5e0a14', deep: '#c62828' },
+      ],
+    },
+    {
+      leg: [255, 122, 89],
+      joint: [74, 222, 128],
+      body: [78, 98, 242],
+      head: [255, 79, 216],
+      fx: [
+        { fill: '#ff7a45', ink: '#5a1c05', deep: '#d9480f' },
+        { fill: '#3fd673', ink: '#0b4722', deep: '#1a8f3c' },
+        { fill: '#ff3b4e', ink: '#5e0a14', deep: '#c62828' },
+      ],
+    },
   ];
 
-  const REACH = CFG.upperLen + CFG.lowerLen;
+  const REACH = CFG.upperLen + CFG.midLen + CFG.lowerLen;
   const SKIP =
     'script,style,noscript,textarea,input,select,option,button,svg,canvas,video,audio,' +
     'iframe,object,embed,pre,code,[contenteditable]:not([contenteditable="false"]),[data-wc]';
@@ -83,8 +111,8 @@
   // ───────────────────────────── Shared state ─────────────────────────────
 
   const calm = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const palette = pageIsDark() ? CFG.darkPalette : CFG.lightPalette;
-  const bannerText = palette === CFG.darkPalette ? 'rgba(0,0,0,.74)' : '#fff';
+  const darkPage = pageIsDark();
+  let themeIndex = 0;
 
   let vw = innerWidth;
   let vh = innerHeight;
@@ -143,12 +171,18 @@
   }
 
   function addTarget(el, link) {
-    targets.push({ el, link, x: 0, y: 0, w: 0, h: 0, leg: null, gone: false, q: 0 });
+    targets.push({ el, link, x: 0, y: 0, w: 0, h: 0, holder: null, gone: false, q: 0 });
   }
 
   function scan() {
     const m = CFG.scanMargin;
     const texts = [];
+
+    // Links in the scan region, known and new: decides whether plain words are needed at all.
+    let links = 0;
+    for (const t of targets) {
+      if (t.link && t.w && t.y + t.h > sy - m && t.y < sy + vh + m) links++;
+    }
 
     // Phase 1 (read): collect unit links and candidate text nodes near the viewport.
     const walker = document.createTreeWalker(
@@ -168,6 +202,7 @@
           if (node.tagName === 'A' && isUnitLink(node, r)) {
             knownLinks.add(node);
             addTarget(node, true);
+            links++;
             return NodeFilter.FILTER_REJECT;
           }
           return NodeFilter.FILTER_SKIP;
@@ -177,9 +212,11 @@
     while (walker.nextNode()) texts.push(walker.currentNode);
 
     // Phase 2 (read): keep text that is really in the region and safe to split.
+    const useWords = CFG.words === true || (CFG.words === 'auto' && links < CFG.minLinks);
     const range = document.createRange();
     const unsafe = new Map();
     const keep = texts.filter((node) => {
+      if (!useWords) return false;
       const parent = node.parentElement;
       if (!parent) return false;
       let bad = unsafe.get(parent);
@@ -275,7 +312,7 @@
         for (const t of cellList) {
           if (t.q === queryId) continue;
           t.q = queryId;
-          if (t.gone || t.leg || t === skip) continue;
+          if (t.gone || t.holder || t === skip) continue;
           const px = t.w > 6 ? clamp(x, t.x + 3, t.x + t.w - 3) : t.x + t.w / 2;
           const py = t.y + t.h / 2;
           let d = Math.hypot(px - x, py - y);
@@ -381,6 +418,8 @@
         hy: 0,
         kx: 0,
         ky: 0,
+        ax: 0,
+        ay: 0,
         x: 0,
         y: 0,
         stepping: false,
@@ -422,14 +461,14 @@
 
     const held = leg.target;
     leg.target = null;
-    if (held) held.leg = null;
+    if (held) held.holder = null;
 
     const near = nearest(tx, ty, CFG.snapRadius, hipX, hipY, max, held);
     if (near) {
       tx = near.x;
       ty = near.y;
       leg.next = near.target;
-      near.target.leg = leg;
+      near.target.holder = leg;
     } else {
       leg.next = null;
     }
@@ -441,8 +480,11 @@
     leg.t = 0;
     leg.stepping = true;
 
+    // Kick: the link the foot was standing on is dragged part of the way along the step.
     if (held && !held.gone && held.w && held.el.isConnected) {
-      if (Math.random() < (held.link ? CFG.linkGrabChance : CFG.wordGrabChance)) grab(held, leg);
+      if (Math.random() < (held.link ? CFG.linkKickChance : CFG.wordKickChance)) {
+        leg.carry = grab(held, (tx - leg.x) * rand(0.3, 0.9), (ty - leg.y) * rand(0.3, 0.9));
+      }
     }
   }
 
@@ -458,25 +500,44 @@
     }
   }
 
-  // Two-bone IK by the law of cosines.
-  function solveKnee(leg) {
-    const a = CFG.upperLen;
-    const b = CFG.lowerLen;
-    let dx = leg.x - leg.hx;
-    let dy = leg.y - leg.hy;
-    const raw = Math.hypot(dx, dy);
-    if (raw > REACH) {
-      // A scurrying body can outrun a foot mid-step; keep the foot attached to the leg.
-      dx *= REACH / raw;
-      dy *= REACH / raw;
-      leg.x = leg.hx + dx;
-      leg.y = leg.hy + dy;
-    }
-    const d = clamp(raw, Math.abs(a - b) + 0.001, a + b - 0.001);
+  // Two-bone IK by the law of cosines: the joint between bones a and b on the way from
+  // (x0, y0) to (x1, y1). The result is left in jointX/jointY.
+  let jointX = 0;
+  let jointY = 0;
+  function solveJoint(x0, y0, x1, y1, a, b, bend) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const d = clamp(Math.hypot(dx, dy), Math.abs(a - b) + 0.001, a + b - 0.001);
     const cosA = clamp((a * a + d * d - b * b) / (2 * a * d), -1, 1);
-    const angle = Math.atan2(dy, dx) + leg.bend * Math.acos(cosA);
-    leg.kx = leg.hx + a * Math.cos(angle);
-    leg.ky = leg.hy + a * Math.sin(angle);
+    const angle = Math.atan2(dy, dx) + bend * Math.acos(cosA);
+    jointX = x0 + a * Math.cos(angle);
+    jointY = y0 + a * Math.sin(angle);
+  }
+
+  // Three bones (hip → knee → ankle → foot) solved as two two-bone problems.
+  function solveLeg(leg) {
+    const dx = leg.x - leg.hx;
+    const dy = leg.y - leg.hy;
+    let d = Math.hypot(dx, dy);
+    if (d > REACH) {
+      // A scurrying body can outrun a foot mid-step; keep the foot attached to the leg.
+      leg.x = leg.hx + (dx * REACH) / d;
+      leg.y = leg.hy + (dy * REACH) / d;
+      d = REACH;
+    }
+
+    // The knee is placed as if the two lower bones were one bone, whose length runs from 55%
+    // of their sum (leg tucked in, ankle sharply bent) to 100% (leg fully stretched).
+    const stretch = d / REACH;
+    const lower = CFG.midLen + CFG.lowerLen;
+    solveJoint(leg.hx, leg.hy, leg.x, leg.y, CFG.upperLen, lower * (0.55 + 0.45 * stretch * stretch), leg.bend);
+    leg.kx = jointX;
+    leg.ky = jointY;
+
+    // The ankle bends the opposite way to the knee, which folds the leg into a zigzag.
+    solveJoint(leg.kx, leg.ky, leg.x, leg.y, CFG.midLen, CFG.lowerLen, -leg.bend);
+    leg.ax = jointX;
+    leg.ay = jointY;
   }
 
   function updateLegs(dt, now) {
@@ -504,7 +565,7 @@
         if (stretched || (behind && otherGroupPlanted(leg.group))) startStep(leg, restX, restY);
       }
 
-      solveKnee(leg);
+      solveLeg(leg);
     }
 
     // Idle fidget: a standing spider keeps pawing at the text.
@@ -523,10 +584,13 @@
 
   // ───────────────────────────── Grab FX (archi §10) ─────────────────────────────
 
-  function grab(t, leg) {
+  // Hides `t` and puts a restyled floating copy where it was. (dx, dy) is how far the copy
+  // ends up from its origin: zero for the thread, a share of the step for a kicking foot.
+  // Returns the copy's animation record; the caller eases it in with drag().
+  function grab(t, dx, dy) {
     const el = t.el;
     const text = (el.innerText || el.textContent).replace(/\s+/g, ' ').trim();
-    if (!text) return;
+    if (!text) return null;
 
     const cs = getComputedStyle(el);
     const copy = document.createElement('span');
@@ -542,16 +606,8 @@
     s.color = cs.color;
     s.lineHeight = t.h + 'px';
 
-    const carry = {
-      el: copy,
-      x: t.x,
-      y: t.y,
-      dx: (leg.toX - leg.fromX) * rand(0.3, 0.9),
-      dy: (leg.toY - leg.fromY) * rand(0.3, 0.9),
-      rot: 0,
-      scale: 1,
-    };
-    restyle(carry, text.length);
+    const carry = { el: copy, x: t.x, y: t.y, dx, dy, rot: 0, scale: 1, age: 0 };
+    restyle(carry, text.length, dx !== 0 || dy !== 0);
     drag(carry, 0);
     layer.appendChild(copy);
 
@@ -565,43 +621,177 @@
     el.style.setProperty('visibility', 'hidden', 'important');
 
     t.gone = true;
-    leg.carry = carry;
+    return carry;
   }
 
-  function restyle(carry, length) {
+  // The copy starts out looking like the original (font, size, colour); this changes some of
+  // that. Whatever is not rolled here stays as it was, which is why most links end up in
+  // place, upright, and still recognisably themselves.
+  function restyle(carry, length, kicked) {
     const s = carry.el.style;
-    const color = pick(palette);
-    s.fontFamily = pick(CFG.fonts);
-    if (Math.random() < 0.3) s.fontStyle = 'italic';
-    if (Math.random() < 0.2) s.letterSpacing = '.08em';
+    const fx = THEMES[themeIndex].fx;
+    let changed = false;
 
-    const look = Math.random();
-    if (look < 0.35) {
-      s.background = color;
-      s.color = bannerText;
-      s.padding = '0 .3em';
-    } else {
-      s.color = color;
-      if (look < 0.6) {
-        s.outline = `1.5px solid ${pick(palette)}`;
+    const font = Math.random();
+    if (font < 0.45) {
+      s.fontFamily = CFG.mono;
+      if (Math.random() < 0.4) s.letterSpacing = '.1em';
+      changed = true;
+    } else if (font < 0.75) {
+      s.fontFamily = CFG.serif;
+      changed = true;
+    }
+    if (Math.random() < 0.15) s.fontWeight = 'bold';
+
+    const size = Math.random();
+    if (size < 0.22) carry.scale = rand(0.3, 0.45);
+    else if (size < 0.44) carry.scale = length <= 24 ? rand(1.5, 2) : rand(1.05, 1.15);
+    if (carry.scale !== 1) changed = true;
+
+    // Look: highlight bar, recolour, recolour in a thin box, or the link's own colour.
+    // A link nothing else happened to always gets a colour, so no restyle is invisible.
+    const look = changed ? Math.random() : Math.random() * 0.7;
+    if (look < 0.25) {
+      const c = fx[(Math.random() * 2) | 0];
+      s.background = c.fill;
+      s.color = c.ink;
+      s.padding = '0 .25em';
+    } else if (look < 0.7) {
+      const c = pick(fx);
+      s.color = darkPage ? c.fill : c.deep;
+      if (look > 0.6) {
+        s.outline = `1px solid ${s.color}`;
         s.outlineOffset = '2px';
-      } else if (look < 0.75) {
-        s.background = color + '33';
       }
     }
 
-    const size = Math.random();
-    if (size < 0.3) carry.scale = length <= 24 ? rand(1.4, 2.3) : rand(1, 1.2);
-    else if (size < 0.5) carry.scale = rand(0.4, 0.65);
-    else carry.scale = rand(0.9, 1.15);
-
-    carry.rot = !calm && Math.random() < 0.3 ? rand(-80, 80) : rand(-9, 9);
+    // Most restyled links stay upright; kicked ones usually tumble.
+    if (Math.random() < (kicked ? 0.5 : 0.12)) {
+      const steep = !calm && Math.random() < 0.5;
+      carry.rot = (steep ? rand(40, 80) : rand(6, 18)) * (Math.random() < 0.5 ? -1 : 1);
+    } else {
+      // Unrotated copies grow and shrink from their left edge, like text being retyped.
+      s.transformOrigin = '0 50%';
+    }
   }
 
   function drag(carry, e) {
     carry.el.style.transform =
       `translate(${carry.x + carry.dx * e}px,${carry.y + carry.dy * e}px) ` +
       `rotate(${carry.rot * e}deg) scale(${1 + (carry.scale - 1) * e})`;
+  }
+
+  // ───────────────────────────── Thread (archi §10.5) ─────────────────────────────
+
+  // The line from the spider's head to one link at a time. The link is boxed while the
+  // thread holds it, then restyled where it stands.
+  const thread = {
+    target: null,
+    age: 0,
+    hold: 0,
+    done: false, // the link has been restyled and the thread is pulling back
+    ext: 0, // 0..1, how far the line has reached
+    hx: 0, // head
+    hy: 0,
+    x: 0, // attachment point on the link's box
+    y: 0,
+    nextAt: 0,
+  };
+  const settling = []; // copies restyled by the thread, still easing into their new look
+
+  // A random free target between threadMin and threadRange from the head, on screen.
+  // Links are preferred; a word is only chosen when no link qualifies.
+  function pickPrey() {
+    const c = CFG.cell;
+    const r = CFG.threadRange;
+    const x0 = Math.max(0, Math.floor((thread.hx - r) / c));
+    const x1 = Math.max(0, Math.floor((thread.hx + r) / c));
+    const y0 = Math.max(0, Math.floor((thread.hy - r) / c));
+    const y1 = Math.max(0, Math.floor((thread.hy + r) / c));
+    let chosen = null;
+    let count = 0;
+    queryId++;
+    for (let gy = y0; gy <= y1; gy++) {
+      for (let gx = x0; gx <= x1; gx++) {
+        const cellList = grid.get(gy * 4096 + gx);
+        if (!cellList) continue;
+        for (const t of cellList) {
+          if (t.q === queryId) continue;
+          t.q = queryId;
+          if (t.gone || t.holder) continue;
+          if (t.y + t.h < sy || t.y > sy + vh) continue;
+          const d = Math.hypot(
+            clamp(thread.hx, t.x, t.x + t.w) - thread.hx,
+            clamp(thread.hy, t.y, t.y + t.h) - thread.hy
+          );
+          if (d < CFG.threadMin || d > r) continue;
+          if (chosen && t.link !== chosen.link) {
+            if (!t.link) continue; // a word never replaces a link
+            count = 0; // the first link replaces any word
+          }
+          // Reservoir sampling: every candidate of the winning kind is equally likely.
+          if (Math.random() * ++count < 1) chosen = t;
+        }
+      }
+    }
+    return chosen;
+  }
+
+  function updateThread(dt, now) {
+    const nose = CFG.bodyLength / 2 - 9;
+    thread.hx = body.x + nose * body.cos;
+    thread.hy = body.y + nose * body.sin;
+
+    for (let i = settling.length - 1; i >= 0; i--) {
+      const carry = settling[i];
+      carry.age = Math.min(1, carry.age + dt / CFG.settleTime);
+      drag(carry, smooth(carry.age));
+      if (carry.age === 1) {
+        carry.el.style.willChange = 'auto';
+        settling.splice(i, 1);
+      }
+    }
+
+    const t = thread.target;
+    if (!t) {
+      if (now < thread.nextAt) return;
+      const prey = pickPrey();
+      if (!prey) {
+        thread.nextAt = now + 300;
+        return;
+      }
+      prey.holder = thread;
+      thread.target = prey;
+      thread.age = 0;
+      thread.done = false;
+      thread.hold = rand(CFG.threadHold[0], CFG.threadHold[1]);
+      return;
+    }
+
+    thread.age += dt;
+    if (!thread.done) {
+      const lost = t.gone || !t.w || !t.el.isConnected;
+      if (!lost) {
+        // Attach to the nearest point of the link's box.
+        thread.x = clamp(thread.hx, t.x, t.x + t.w);
+        thread.y = clamp(thread.hy, t.y, t.y + t.h);
+        thread.ext = Math.min(1, thread.age / CFG.threadOut);
+      }
+      if (lost || thread.age >= CFG.threadOut + thread.hold) {
+        t.holder = null;
+        const carry = lost ? null : grab(t, 0, 0);
+        if (carry) settling.push(carry);
+        thread.done = true;
+        thread.age = 0;
+      }
+    } else {
+      thread.ext = Math.min(thread.ext, 1 - thread.age / CFG.threadOut);
+      if (thread.ext <= 0) {
+        thread.ext = 0;
+        thread.target = null;
+        thread.nextAt = now + rand(CFG.threadPause[0], CFG.threadPause[1]);
+      }
+    }
   }
 
   // ───────────────────────────── Renderer (archi §11) ─────────────────────────────
@@ -611,6 +801,7 @@
   function updateTint(now) {
     const phase = Math.max(0, now - born) / CFG.themeEvery;
     const i = Math.floor(phase);
+    themeIndex = i % THEMES.length;
     const a = THEMES[i % THEMES.length];
     const b = THEMES[(i + 1) % THEMES.length];
     const m = smooth(clamp((phase - i - 0.9) / 0.1, 0, 1)); // blend over the last 10% of each period
@@ -645,30 +836,39 @@
     ctx.clearRect(0, 0, vw, vh);
     ctx.translate(-sx, -sy); // everything below is in document space
 
-    // Grips: the element under each planted foot.
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = tint.head;
-    for (const leg of legs) {
-      const t = leg.target;
-      if (t && !leg.stepping && !t.gone && t.w) ctx.strokeRect(t.x - 2, t.y - 1, t.w + 4, t.h + 2);
+    // The box around the link the thread is holding.
+    const prey = thread.target;
+    if (prey && !thread.done && prey.w) {
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = tint.head;
+      ctx.strokeRect(prey.x - 3, prey.y - 2, prey.w + 6, prey.h + 4);
     }
 
-    ctx.lineWidth = 2.4;
+    ctx.lineWidth = 2;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = tint.leg;
     ctx.beginPath();
+    if (thread.ext > 0) {
+      ctx.moveTo(thread.hx, thread.hy);
+      ctx.lineTo(
+        thread.hx + (thread.x - thread.hx) * thread.ext,
+        thread.hy + (thread.y - thread.hy) * thread.ext
+      );
+    }
     for (const leg of legs) {
       ctx.moveTo(leg.hx, leg.hy);
       ctx.lineTo(leg.kx, leg.ky);
+      ctx.lineTo(leg.ax, leg.ay);
       ctx.lineTo(leg.x, leg.y);
     }
     ctx.stroke();
 
     ctx.fillStyle = tint.joint;
     for (const leg of legs) {
-      dot(leg.kx, leg.ky, 3.2);
-      dot(leg.x, leg.y, 3.2 + leg.lift * 2.2);
+      dot(leg.kx, leg.ky, 3);
+      dot(leg.ax, leg.ay, 3);
+      dot(leg.x, leg.y, 3 + leg.lift * 1.5);
     }
 
     const l = CFG.bodyLength;
@@ -677,9 +877,9 @@
     ctx.translate(body.x, body.y);
     ctx.rotate(body.angle);
     ctx.beginPath();
-    if (ctx.roundRect) ctx.roundRect(-l / 2, -w / 2, l, w, 5);
+    if (ctx.roundRect) ctx.roundRect(-l / 2, -w / 2, l, w, 4);
     else ctx.rect(-l / 2, -w / 2, l, w);
-    ctx.fillStyle = 'rgba(18,22,58,.78)';
+    ctx.fillStyle = 'rgba(34,40,110,.7)';
     ctx.fill();
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = tint.body;
@@ -711,6 +911,7 @@
 
     updateBody(dt, now);
     updateLegs(dt, now);
+    updateThread(dt, now);
     draw(now);
   }
 
@@ -762,6 +963,6 @@
   addEventListener('scroll', onScroll, { capture: true, passive: true });
   addEventListener('resize', onResize);
   addEventListener('keydown', onKey, true);
-  window.__webCrawler = { destroy, config: CFG, body, legs };
+  window.__webCrawler = { destroy, config: CFG, body, legs, thread };
   raf = requestAnimationFrame(frame);
 })();

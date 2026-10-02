@@ -1,6 +1,6 @@
 # 🕷️ Web Crawler
 
-A spider that crawls the webpage you are looking at. It walks on eight inverse-kinematics legs, plants its feet on real links and words, and drags them out of place in new fonts and colours.
+A spider that crawls the webpage you are looking at. It walks on eight zigzag inverse-kinematics legs, shoots a thread from its head to one link at a time, and restyles each link it catches: new font, new colour, highlight bars, tiny or huge, and now and then knocked out of place.
 
 Nothing is scraped or sent anywhere. Press **Esc** (or trigger it again) and the page is put back exactly as it was.
 
@@ -39,7 +39,12 @@ Sites with a strict Content-Security-Policy (Wikipedia, GitHub) block bookmarkle
 
 ## Tuning
 
-Every constant is in the `CFG` object at the top of `extension/crawler.js`: speeds, leg lengths, step size, how often links and words get grabbed, fonts, palettes. `words: false` makes it move links only, like the original clip. See the tuning guide in `archi.md` §16.
+Every constant is in the `CFG` object at the top of `extension/crawler.js`: speeds, leg lengths, step size, thread range and timing, how often a foot kicks a link out of place. Two worth knowing:
+
+- `themeEvery: 6000` alternates the blue/pink spider with the orange/green one every six seconds, as the original clip does. The default keeps it blue/pink.
+- `words: 'auto'` leaves plain text alone wherever the page has links, and falls back to single words where it has few. `false` means links only, `true` means words always.
+
+See the tuning guide in `archi.md` §16.
 
 ## Layout
 
